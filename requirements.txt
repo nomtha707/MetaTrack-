@@ -1,0 +1,6 @@
+watchdog
+python-docx
+pdfplumber
+sentence-transformers
+scikit-learn
+joblib

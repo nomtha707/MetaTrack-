@@ -1,0 +1,113 @@
+# ============================
+# Python
+# ============================
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# Logs and databases
+*.log
+*.sqlite3
+*.db
+
+# ============================
+# Project-specific (LLM Recommender System)
+# ============================
+
+# Embedding and index files
+*.pkl
+*.npz
+*.npy
+*.bin
+*.idx
+*.faiss
+index/
+indexes/
+embeddings/
+metadata/
+cache/
+storage/
+__storage__/
+vector_store/
+data_store/
+
+# Model weights or checkpoints
+*.pt
+*.pth
+*.h5
+*.ckpt
+
+# Generated text outputs / temporary files
+outputs/
+results/
+tmp/
+temp/
+*.jsonl
+
+# ============================
+# Environment / secrets
+# ============================
+
+.env
+.env.*
+*.env
+config.yaml
+config.json
+secrets.yaml
+secrets.json
+
+# ============================
+# VS Code
+# ============================
+
+.vscode/
+.history/
+*.code-workspace
+
+# ============================
+# OS / System files
+# ============================
+
+.DS_Store
+Thumbs.db
+Desktop.ini
