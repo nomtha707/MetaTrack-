@@ -1,16 +1,20 @@
 import sqlite3
 import os
 from typing import Optional, Dict
+from datetime import datetime  # Import datetime
 
 
 class MetadataDB:
     def __init__(self, path: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+        # Set detect_types for easier timestamp handling
+        self.conn = sqlite3.connect(
+            path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES, check_same_thread=False)
         self._ensure()
 
     def _ensure(self):
         cur = self.conn.cursor()
+        # Store timestamps as TEXT in ISO format for easier comparison
         cur.execute('''
         CREATE TABLE IF NOT EXISTS files (
             path TEXT PRIMARY KEY,
@@ -39,10 +43,11 @@ class MetadataDB:
             active=excluded.active,
             extra_json=excluded.extra_json
         ''', (
-            meta.get('path'), meta.get('name'), meta.get(
-                'size'), meta.get('created_at'),
-            meta.get('modified_at'), meta.get(
-                'accessed_at'), 1, meta.get('extra_json')
+            meta.get('path'), meta.get('name'), meta.get('size'),
+            # Ensure timestamps are in ISO format
+            meta.get('created_at'), meta.get(
+                'modified_at'), meta.get('accessed_at'),
+            1, meta.get('extra_json')
         ))
         self.conn.commit()
 
@@ -65,3 +70,12 @@ class MetadataDB:
             return None
         cols = [d[0] for d in cur.description]
         return dict(zip(cols, row))
+
+    # --- NEW METHOD ---
+    def get_modified_time(self, path: str) -> Optional[str]:
+        """Gets the stored modified time (ISO format) for a file."""
+        cur = self.conn.cursor()
+        cur.execute(
+            'SELECT modified_at FROM files WHERE path=? AND active=1', (path,))
+        row = cur.fetchone()
+        return row[0] if row else None

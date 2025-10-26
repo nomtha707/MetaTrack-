@@ -1,9 +1,11 @@
+# tracker/watcher.py (Updated)
 import os
 import time
 import json
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from pathlib import Path
+from datetime import datetime  # Import datetime
 import config
 from tracker.metadata_db import MetadataDB
 from tracker.extractor import extract_text
@@ -12,19 +14,21 @@ from tracker.vectorstore import SimpleVectorStore
 
 
 def file_metadata(path: str):
+    """Gets file metadata, converting timestamps to ISO format."""
     try:
         st = os.stat(path)
         return {
             'path': path,
             'name': os.path.basename(path),
             'size': st.st_size,
-            'created_at': time.ctime(st.st_ctime),
-            'modified_at': time.ctime(st.st_mtime),
-            'accessed_at': time.ctime(st.st_atime),
+            # --- USE ISO FORMAT ---
+            'created_at': datetime.fromtimestamp(st.st_ctime).isoformat(),
+            'modified_at': datetime.fromtimestamp(st.st_mtime).isoformat(),
+            'accessed_at': datetime.fromtimestamp(st.st_atime).isoformat(),
             'extra_json': '{}'
         }
     except Exception as e:
-        print('stat error', e)
+        print(f'Error getting metadata for {path}: {e}')
         return None
 
 
@@ -33,16 +37,12 @@ class Handler(FileSystemEventHandler):
         self.db = db
         self.embedder = embedder
         self.vstore = vstore
-        # --- ADD EXCLUDED DIRS TO HANDLER ---
         self.excluded_dirs = ['.venv', 'site-packages', '__pycache__', '.git', '.vscode']
         self.valid_extensions = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf')
 
-    # --- ADD THIS HELPER METHOD ---
     def _is_path_excluded(self, path):
-        # Check if path is None or not a string
         if not path or not isinstance(path, str):
             return True
-        # Normalize path separators for consistent checking
         normalized_path = f"/{path.replace('\\', '/')}/"
         if any(f"/{excluded_dir}/" in normalized_path for excluded_dir in self.excluded_dirs):
             return True
@@ -50,30 +50,37 @@ class Handler(FileSystemEventHandler):
             return True
         return False
 
-    def process_file(self, path):
+    def process_file(self, path, check_modified_time=False):
+        """Processes a file for indexing. If check_modified_time is True, only processes if newer than DB record."""
         if self._is_path_excluded(path):
             return
 
         if not os.path.exists(path):
             return
 
-        # --- ADD FILE SIZE CHECK HERE ---
         try:
-            # Skip files larger than 100MB (adjust as needed)
-            MAX_FILE_SIZE = 100 * 1024 * 1024
-            file_size = os.path.getsize(path)
-            if file_size > MAX_FILE_SIZE:
-                print(
-                    f"Skipping large file ({file_size / (1024*1024):.2f} MB): {path}")
-                return  # Stop processing this file
-        except Exception as e:
-            print(f"Could not get size for {path}: {e}")
-            return  # Skip if size check fails
-        # --- END FILE SIZE CHECK ---
+            # --- MODIFICATION TIME CHECK ---
+            current_meta = file_metadata(path)
+            if not current_meta:
+                return  # Skip if we can't get metadata
 
-        # --- MORE DEBUG PRINTS ---
-        print(f"Processing: {path}")
-        try:
+            if check_modified_time:
+                stored_mod_time_str = self.db.get_modified_time(path)
+                if stored_mod_time_str:
+                    # Compare ISO format strings directly
+                    if current_meta['modified_at'] <= stored_mod_time_str:
+                        # print(f"Skipping unchanged file: {path}") # Optional: for debugging
+                        return  # File hasn't changed, skip processing
+            # --- END CHECK ---
+
+            # Skip large files (adjust size as needed)
+            MAX_FILE_SIZE = 100 * 1024 * 1024
+            if current_meta['size'] > MAX_FILE_SIZE:
+                print(
+                    f"Skipping large file ({current_meta['size'] / (1024*1024):.2f} MB): {path}")
+                return
+
+            print(f"Processing: {path}")
             print(f"  Extracting text...")
             text = extract_text(path)
             print(f"  Text extracted (length: {len(text)}).")
@@ -83,48 +90,35 @@ class Handler(FileSystemEventHandler):
             print(
                 f"  Embedding generated (shape: {emb.shape if hasattr(emb, 'shape') else 'N/A'}).")
 
-            print(f"  Getting metadata...")
-            meta = file_metadata(path)
-            if not meta:
-                print(f"  Failed to get metadata for {path}")
-                return  # Skip if metadata failed
-            print(f"  Metadata retrieved.")
-
+            # Metadata is already fetched, use current_meta
             print(f"  Upserting metadata to DB...")
-            self.db.upsert(meta)
+            self.db.upsert(current_meta)  # Use the already fetched metadata
             print(f"  Metadata upserted.")
 
             print(f"  Upserting embedding to VectorStore...")
-            # This is where embeddings.joblib is created/updated
             self.vstore.upsert(path, emb)
             print(f"  Embedding upserted.")
 
-            print(f"Indexed: {path}")  # Moved the final confirmation here
+            print(f"Indexed: {path}")
 
         except Exception as e:
-            # Ensure errors are printed
             print(f"❌ Error processing {path}: {e}")
 
-    # --- UPDATE EVENT METHODS ---
+    # Event methods call process_file WITHOUT the time check (always process changes)
     def on_created(self, event):
         if event.is_directory:
             return
-        # Check exclusion before processing
-        if not self._is_path_excluded(event.src_path):
-            self.process_file(event.src_path)
+        self.process_file(event.src_path, check_modified_time=False)
 
     def on_modified(self, event):
         if event.is_directory:
             return
-        # Check exclusion before processing
-        if not self._is_path_excluded(event.src_path):
-            self.process_file(event.src_path)
+        self.process_file(event.src_path, check_modified_time=False)
 
     def on_deleted(self, event):
         if event.is_directory:
             return
         path = event.src_path
-        # Check exclusion before deleting (optional but consistent)
         if not self._is_path_excluded(path):
             self.db.mark_deleted(path)
             self.vstore.delete(path)
@@ -132,52 +126,52 @@ class Handler(FileSystemEventHandler):
 
 
 if __name__ == '__main__':
-    # --- 1. Initialize Components ONCE ---
     path = config.WATCH_PATH
     db = MetadataDB(config.DB_PATH)
     embedder = Embedder(backend=config.EMBEDDING_BACKEND)
     vstore = SimpleVectorStore(path=config.EMBEDDINGS_PATH)
-    # Create the handler using the components
     event_handler = Handler(db, embedder, vstore)
-    
-    # --- 2. Perform Initial Scan ---
-    print(f"Performing initial scan of {path}...")
-    # --- ADD THIS LIST ---
-    excluded_dirs = ['.venv', 'site-packages', '__pycache__', '.git', '.vscode'] # Add any other folders to exclude
-    
+
+    print(
+        f"Performing initial scan of {path} (only processing new/modified files)...")
+    excluded_dirs = event_handler.excluded_dirs  # Use handler's excluded list
+
     if os.path.exists(path):
-        for root, dirs, files in os.walk(path, topdown=True): # Use topdown=True
-            # --- MODIFY dirs[:] TO EXCLUDE FOLDERS ---
-            # This stops os.walk from even going *into* these folders
-            dirs[:] = [d for d in dirs if d not in excluded_dirs and not d.startswith('.')]
+        processed_count = 0
+        skipped_count = 0
+        for root, dirs, files in os.walk(path, topdown=True):
+            dirs[:] = [
+                d for d in dirs if d not in excluded_dirs and not d.startswith('.')]
             files = [f for f in files if not f.startswith('.')]
 
-            # --- ADD PATH CHECK BEFORE PROCESSING FILES ---
-            # Check if the current 'root' directory is inside an excluded folder
-            is_excluded = any(f"/{excluded_dir}/" in f"/{root.replace('\\', '/')}/" or f"\\{excluded_dir}\\" in f"\\{root}\\" for excluded_dir in excluded_dirs)
-            if is_excluded:
-                continue # Skip processing files in this excluded directory
-        
+            is_excluded_root = any(
+                f"/{excluded_dir}/" in f"/{root.replace('\\', '/')}/" or f"\\{excluded_dir}\\" in f"\\{root}\\" for excluded_dir in excluded_dirs)
+            if is_excluded_root:
+                continue
+
             for filename in files:
                 try:
                     file_path = os.path.join(root, filename)
-                    # --- ADD FILE EXTENSION FILTER (Optional but Recommended) ---
-                    # Only process files with specific extensions you care about
-                    valid_extensions = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf') 
-                    if file_path.lower().endswith(valid_extensions): 
-                        print(f"Found: {file_path}...")
-                        event_handler.process_file(file_path)
+                    # --- CALL process_file WITH check_modified_time=True ---
+                    # The function itself handles extension checks now
+                    processed = event_handler.process_file(
+                        file_path, check_modified_time=True)
+                    # We can't easily check return value here, logic moved inside process_file
+                    # For simplicity, we won't count processed/skipped accurately here unless process_file returns status
                 except Exception as e:
                     print(f"Error during initial scan of {filename}: {e}")
-        print("Initial scan complete.")
-    # --- 3. Setup and Start Observer ---
+        # Need a better way to count processed/skipped if needed
+        print(f"Initial scan complete.")  # Simplified message
+    else:
+        print(
+            f"Error: Watch path '{path}' does not exist. Please check config.py.")
+        exit()
+
     observer = Observer()
-    # Schedule the *same* handler
     observer.schedule(event_handler, path, recursive=True)
-    observer.start()  # Start watching for *new* changes after the scan
+    observer.start()
     print('Started watcher on', path)
 
-    # --- 4. Keep Watcher Running ---
     try:
         while True:
             time.sleep(1)
