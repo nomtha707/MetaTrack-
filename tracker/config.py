@@ -39,5 +39,5 @@ TEXT_CACHE_DIR = os.path.join(DATA_DIR, "text_cache")
 os.makedirs(DB_DIR, exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, "text_cache"), exist_ok=True)
 
-# --- Use the 'tfidf' backend to avoid model-loading crashes ---
-EMBEDDING_BACKEND = 'tfidf'
+# Switching back to sentence-transformers
+EMBEDDING_BACKEND = 'sentence-transformers'

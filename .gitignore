@@ -113,3 +113,5 @@ secrets.json
 .DS_Store
 Thumbs.db
 Desktop.ini
+model/
+MetaTrack.spec 

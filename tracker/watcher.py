@@ -6,7 +6,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from pathlib import Path
 from datetime import datetime
-import config
+import tracker.config as config
 from tracker.metadata_db import MetadataDB
 from tracker.extractor import extract_text
 from tracker.embedder import Embedder
@@ -20,7 +20,7 @@ import traceback
 log_path = os.path.join(config.BASE_DIR, 'watcher.log')
 logging.basicConfig(
     filename=log_path,
-    level=logging.ERROR,
+    level=logging.INFO,  # <-- CHANGED: Log INFO messages, not just ERROR
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 # --- END NEW LOGGING SETUP ---
@@ -41,7 +41,8 @@ def file_metadata(path: str):
             'extra_json': '{}'
         }
     except Exception as e:
-        print(f'Error getting metadata for {path}: {e}')
+        # --- CHANGED: Use logging ---
+        logging.error(f'Error getting metadata for {path}: {e}')
         return None
 
 
@@ -50,12 +51,20 @@ class Handler(FileSystemEventHandler):
         self.db = db
         self.embedder = embedder
         self.vstore = vstore
-        self.excluded_dirs = ['.venv', 'site-packages', '__pycache__', '.git', '.vscode']
+        self.excluded_dirs = ['.venv', 'site-packages',
+                              '__pycache__', '.git', '.vscode']
         self.valid_extensions = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf')
 
     def _is_path_excluded(self, path):
         if not path or not isinstance(path, str):
             return True
+
+        # --- NEW: Ignore MS Office temp files ---
+        filename = os.path.basename(path)
+        if filename.startswith('~$'):
+            return True
+        # --- END NEW ---
+
         normalized_path = f"/{path.replace('\\', '/')}/"
         if any(f"/{excluded_dir}/" in normalized_path for excluded_dir in self.excluded_dirs):
             return True
@@ -82,43 +91,45 @@ class Handler(FileSystemEventHandler):
                 if stored_mod_time_str:
                     # Compare ISO format strings directly
                     if current_meta['modified_at'] <= stored_mod_time_str:
-                        # print(f"Skipping unchanged file: {path}") # Optional: for debugging
+                        # logging.info(f"Skipping unchanged file: {path}") # Optional: for debugging
                         return  # File hasn't changed, skip processing
             # --- END CHECK ---
 
             # Skip large files (adjust size as needed)
             MAX_FILE_SIZE = 100 * 1024 * 1024
             if current_meta['size'] > MAX_FILE_SIZE:
-                print(
+                # --- CHANGED: Use logging ---
+                logging.warning(
                     f"Skipping large file ({current_meta['size'] / (1024*1024):.2f} MB): {path}")
                 return
 
-            print(f"Processing: {path}")
-            print(f"  Extracting text...")
+            # --- CHANGED: Use logging ---
+            logging.info(f"Processing: {path}")
+            logging.info(f"  Extracting text...")
             text = extract_text(path)
-            print(f"  Text extracted (length: {len(text)}).")
+            logging.info(f"  Text extracted (length: {len(text)}).")
 
-            print(f"  Generating embedding...")
+            logging.info(f"  Generating embedding...")
             emb = self.embedder.embed(text)
-            print(
+            logging.info(
                 f"  Embedding generated (shape: {emb.shape if hasattr(emb, 'shape') else 'N/A'}).")
 
             # Metadata is already fetched, use current_meta
-            print(f"  Upserting metadata to DB...")
+            logging.info(f"  Upserting metadata to DB...")
             self.db.upsert(current_meta)  # Use the already fetched metadata
-            print(f"  Metadata upserted.")
+            logging.info(f"  Metadata upserted.")
 
-            print(f"  Upserting embedding to VectorStore...")
+            logging.info(f"  Upserting embedding to VectorStore...")
             self.vstore.upsert(path, emb)
-            print(f"  Embedding upserted.")
+            logging.info(f"  Embedding upserted.")
 
-            print(f"Indexed: {path}")
+            logging.info(f"Indexed: {path}")
 
         except Exception as e:
             # --- THIS IS THE NEW, CRITICAL PART ---
             # Write the full error to our log file
             error_message = f"❌ Error processing {path}: {e}\n{traceback.format_exc()}"
-            print(error_message)  # This won't be visible, but the log will
+            # --- CHANGED: Use logging ---
             logging.error(error_message)
             # --- END CRITICAL PART ---
 
@@ -140,77 +151,86 @@ class Handler(FileSystemEventHandler):
         if not self._is_path_excluded(path):
             self.db.mark_deleted(path)
             self.vstore.delete(path)
-            print('Deleted from index', path)
+            # --- CHANGED: Use logging ---
+            logging.info(f'Deleted from index: {path}')
 
 
-# --- THIS IS THE BLOCK TO REPLACE AT THE END OF watcher.py ---
+# --- THIS IS THE UPDATED BLOCK AT THE END OF watcher.py ---
 if __name__ == '__main__':
-    
+
     # --- NEW GLOBAL TRY...EXCEPT BLOCK ---
     try:
-        logging.error("--- Watcher starting up... ---") # A test to see if log is writable
-        
+        # --- CHANGED: Use logging.info ---
+        logging.info("--- Watcher starting up... ---")
+
         path = config.WATCH_PATH
         db = MetadataDB(config.DB_PATH)
         embedder = Embedder(backend=config.EMBEDDING_BACKEND)
         vstore = SimpleVectorStore(path=config.EMBEDDINGS_PATH)
         event_handler = Handler(db, embedder, vstore)
 
-        logging.error(f"Performing initial scan of {path}...")
-        # print(
-        #     f"Performing initial scan of {path} (only processing new/modified files)...")
-        # excluded_dirs = event_handler.excluded_dirs  # Use handler's excluded list
+        # --- CHANGED: Use logging.info ---
+        logging.info(f"Performing initial scan of {path}...")
+        logging.info(
+            f"Performing initial scan of {path} (only processing new/modified files)...")
+        excluded_dirs = event_handler.excluded_dirs  # Use handler's excluded list
 
-        # if os.path.exists(path):
-        #     processed_count = 0
-        #     skipped_count = 0
-        #     for root, dirs, files in os.walk(path, topdown=True):
-        #         dirs[:] = [
-        #             d for d in dirs if d not in excluded_dirs and not d.startswith('.')]
-        #         files = [f for f in files if not f.startswith('.')]
+        # --- !! UNCOMMENTED INITIAL SCAN !! ---
+        if os.path.exists(path):
+            processed_count = 0
+            skipped_count = 0
+            for root, dirs, files in os.walk(path, topdown=True):
+                dirs[:] = [
+                    d for d in dirs if d not in excluded_dirs and not d.startswith('.')]
+                files = [f for f in files if not f.startswith('.')]
 
-        #         is_excluded_root = any(
-        #             f"/{excluded_dir}/" in f"/{root.replace('\\', '/')}/" or f"\\{excluded_dir}\\" in f"\\{root}\\" for excluded_dir in excluded_dirs)
-        #         if is_excluded_root:
-        #             continue
+                is_excluded_root = any(
+                    f"/{excluded_dir}/" in f"/{root.replace('\\', '/')}/" or f"\\{excluded_dir}\\" in f"\\{root}\\" for excluded_dir in excluded_dirs)
+                if is_excluded_root:
+                    continue
 
-        #         for filename in files:
-        #             try:
-        #                 file_path = os.path.join(root, filename)
-        #                 # --- CALL process_file WITH check_modified_time=True ---
-        #                 # The function itself handles extension checks now
-        #                 processed = event_handler.process_file(
-        #                     file_path, check_modified_time=True)
-        #                 # We can't easily check return value here, logic moved inside process_file
-        #                 # For simplicity, we won't count processed/skipped accurately here unless process_file returns status
-        #             except Exception as e:
-        #                 print(f"Error during initial scan of {filename}: {e}")
-        #                 logging.error(f"Error during initial scan of {filename}: {e}\n{traceback.format_exc()}")
-            
-        #     logging.error("Initial scan complete.")
-        #     print(f"Initial scan complete.")  # Simplified message
-        # else:
-        #     logging.error(f"Error: Watch path '{path}' does not exist.")
-        #     print(
-        #         f"Error: Watch path '{path}' does not exist. Please check config.py.")
-        #     exit()
+                for filename in files:
+                    try:
+                        file_path = os.path.join(root, filename)
+                        # --- CALL process_file WITH check_modified_time=True ---
+                        # The function itself handles extension checks now
+                        event_handler.process_file(
+                            file_path, check_modified_time=True)
+                        # We can't easily check return value here, logic moved inside process_file
+                        # For simplicity, we won't count processed/skipped accurately here unless process_file returns status
+                    except Exception as e:
+                        # --- CHANGED: Use logging.error ---
+                        logging.error(
+                            f"Error during initial scan of {filename}: {e}\n{traceback.format_exc()}")
+
+            # --- CHANGED: Use logging.info ---
+            logging.info("Initial scan complete.")
+        else:
+            # --- CHANGED: Use logging.error ---
+            logging.error(f"Error: Watch path '{path}' does not exist.")
+            logging.error(
+                f"Error: Watch path '{path}' does not exist. Please check config.py.")
+            exit()
+        # --- !! END OF UNCOMMENTED BLOCK !! ---
 
         observer = Observer()
         observer.schedule(event_handler, path, recursive=True)
         observer.start()
-        logging.error(f"Watcher started on {path}.")
-        print('Started watcher on', path)
+        # --- CHANGED: Use logging.info ---
+        logging.info(f"Watcher started on {path}.")
 
         try:
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            logging.error("Watcher stopped by user.")
-            print("\nWatcher stopped by user.")
+            # --- CHANGED: Use logging.info ---
+            logging.info("Watcher stopped by user.")
             observer.stop()
         observer.join()
 
     except Exception as e:
         # --- THIS WILL CATCH ANY STARTUP CRASH ---
-        logging.error(f"🔥🔥🔥 FATAL STARTUP ERROR: {e}\n{traceback.format_exc()}")
+        # --- This one stays as ERROR ---
+        logging.error(
+            f"🔥🔥🔥 FATAL STARTUP ERROR: {e}\n{traceback.format_exc()}")
     # --- END NEW GLOBAL BLOCK ---
