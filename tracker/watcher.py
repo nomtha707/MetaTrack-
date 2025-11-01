@@ -5,12 +5,25 @@ import json
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from pathlib import Path
-from datetime import datetime  # Import datetime
+from datetime import datetime
 import config
 from tracker.metadata_db import MetadataDB
 from tracker.extractor import extract_text
 from tracker.embedder import Embedder
 from tracker.vectorstore import SimpleVectorStore
+
+# --- NEW LOGGING SETUP ---
+import logging
+import traceback
+
+# This will create a 'watcher.log' file in your project's root folder
+log_path = os.path.join(config.BASE_DIR, 'watcher.log')
+logging.basicConfig(
+    filename=log_path,
+    level=logging.ERROR,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+# --- END NEW LOGGING SETUP ---
 
 
 def file_metadata(path: str):
@@ -52,13 +65,13 @@ class Handler(FileSystemEventHandler):
 
     def process_file(self, path, check_modified_time=False):
         """Processes a file for indexing. If check_modified_time is True, only processes if newer than DB record."""
-        if self._is_path_excluded(path):
-            return
+        try:  # --- NEW OUTER TRY BLOCK ---
+            if self._is_path_excluded(path):
+                return
 
-        if not os.path.exists(path):
-            return
+            if not os.path.exists(path):
+                return
 
-        try:
             # --- MODIFICATION TIME CHECK ---
             current_meta = file_metadata(path)
             if not current_meta:
@@ -102,7 +115,12 @@ class Handler(FileSystemEventHandler):
             print(f"Indexed: {path}")
 
         except Exception as e:
-            print(f"❌ Error processing {path}: {e}")
+            # --- THIS IS THE NEW, CRITICAL PART ---
+            # Write the full error to our log file
+            error_message = f"❌ Error processing {path}: {e}\n{traceback.format_exc()}"
+            print(error_message)  # This won't be visible, but the log will
+            logging.error(error_message)
+            # --- END CRITICAL PART ---
 
     # Event methods call process_file WITHOUT the time check (always process changes)
     def on_created(self, event):
@@ -125,57 +143,74 @@ class Handler(FileSystemEventHandler):
             print('Deleted from index', path)
 
 
+# --- THIS IS THE BLOCK TO REPLACE AT THE END OF watcher.py ---
 if __name__ == '__main__':
-    path = config.WATCH_PATH
-    db = MetadataDB(config.DB_PATH)
-    embedder = Embedder(backend=config.EMBEDDING_BACKEND)
-    vstore = SimpleVectorStore(path=config.EMBEDDINGS_PATH)
-    event_handler = Handler(db, embedder, vstore)
-
-    print(
-        f"Performing initial scan of {path} (only processing new/modified files)...")
-    excluded_dirs = event_handler.excluded_dirs  # Use handler's excluded list
-
-    if os.path.exists(path):
-        processed_count = 0
-        skipped_count = 0
-        for root, dirs, files in os.walk(path, topdown=True):
-            dirs[:] = [
-                d for d in dirs if d not in excluded_dirs and not d.startswith('.')]
-            files = [f for f in files if not f.startswith('.')]
-
-            is_excluded_root = any(
-                f"/{excluded_dir}/" in f"/{root.replace('\\', '/')}/" or f"\\{excluded_dir}\\" in f"\\{root}\\" for excluded_dir in excluded_dirs)
-            if is_excluded_root:
-                continue
-
-            for filename in files:
-                try:
-                    file_path = os.path.join(root, filename)
-                    # --- CALL process_file WITH check_modified_time=True ---
-                    # The function itself handles extension checks now
-                    processed = event_handler.process_file(
-                        file_path, check_modified_time=True)
-                    # We can't easily check return value here, logic moved inside process_file
-                    # For simplicity, we won't count processed/skipped accurately here unless process_file returns status
-                except Exception as e:
-                    print(f"Error during initial scan of {filename}: {e}")
-        # Need a better way to count processed/skipped if needed
-        print(f"Initial scan complete.")  # Simplified message
-    else:
-        print(
-            f"Error: Watch path '{path}' does not exist. Please check config.py.")
-        exit()
-
-    observer = Observer()
-    observer.schedule(event_handler, path, recursive=True)
-    observer.start()
-    print('Started watcher on', path)
-
+    
+    # --- NEW GLOBAL TRY...EXCEPT BLOCK ---
     try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nWatcher stopped by user.")
-        observer.stop()
-    observer.join()
+        logging.error("--- Watcher starting up... ---") # A test to see if log is writable
+        
+        path = config.WATCH_PATH
+        db = MetadataDB(config.DB_PATH)
+        embedder = Embedder(backend=config.EMBEDDING_BACKEND)
+        vstore = SimpleVectorStore(path=config.EMBEDDINGS_PATH)
+        event_handler = Handler(db, embedder, vstore)
+
+        logging.error(f"Performing initial scan of {path}...")
+        # print(
+        #     f"Performing initial scan of {path} (only processing new/modified files)...")
+        # excluded_dirs = event_handler.excluded_dirs  # Use handler's excluded list
+
+        # if os.path.exists(path):
+        #     processed_count = 0
+        #     skipped_count = 0
+        #     for root, dirs, files in os.walk(path, topdown=True):
+        #         dirs[:] = [
+        #             d for d in dirs if d not in excluded_dirs and not d.startswith('.')]
+        #         files = [f for f in files if not f.startswith('.')]
+
+        #         is_excluded_root = any(
+        #             f"/{excluded_dir}/" in f"/{root.replace('\\', '/')}/" or f"\\{excluded_dir}\\" in f"\\{root}\\" for excluded_dir in excluded_dirs)
+        #         if is_excluded_root:
+        #             continue
+
+        #         for filename in files:
+        #             try:
+        #                 file_path = os.path.join(root, filename)
+        #                 # --- CALL process_file WITH check_modified_time=True ---
+        #                 # The function itself handles extension checks now
+        #                 processed = event_handler.process_file(
+        #                     file_path, check_modified_time=True)
+        #                 # We can't easily check return value here, logic moved inside process_file
+        #                 # For simplicity, we won't count processed/skipped accurately here unless process_file returns status
+        #             except Exception as e:
+        #                 print(f"Error during initial scan of {filename}: {e}")
+        #                 logging.error(f"Error during initial scan of {filename}: {e}\n{traceback.format_exc()}")
+            
+        #     logging.error("Initial scan complete.")
+        #     print(f"Initial scan complete.")  # Simplified message
+        # else:
+        #     logging.error(f"Error: Watch path '{path}' does not exist.")
+        #     print(
+        #         f"Error: Watch path '{path}' does not exist. Please check config.py.")
+        #     exit()
+
+        observer = Observer()
+        observer.schedule(event_handler, path, recursive=True)
+        observer.start()
+        logging.error(f"Watcher started on {path}.")
+        print('Started watcher on', path)
+
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logging.error("Watcher stopped by user.")
+            print("\nWatcher stopped by user.")
+            observer.stop()
+        observer.join()
+
+    except Exception as e:
+        # --- THIS WILL CATCH ANY STARTUP CRASH ---
+        logging.error(f"🔥🔥🔥 FATAL STARTUP ERROR: {e}\n{traceback.format_exc()}")
+    # --- END NEW GLOBAL BLOCK ---
