@@ -1,21 +1,28 @@
 import sqlite3
 import os
-from typing import Optional, Dict
-from datetime import datetime  # Import datetime
+import tracker.config as config
+import logging
 
 
 class MetadataDB:
-    def __init__(self, path: str):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        # Set detect_types for easier timestamp handling
-        self.conn = sqlite3.connect(
-            path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES, check_same_thread=False)
-        self._ensure()
+    def __init__(self, db_path=config.DB_PATH):
+        self.db_path = db_path
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+        self.conn = self._create_connection()
+        self._create_table()
 
-    def _ensure(self):
-        cur = self.conn.cursor()
-        # Store timestamps as TEXT in ISO format for easier comparison
-        cur.execute('''
+    def _create_connection(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            return conn
+        except sqlite3.Error as e:
+            logging.error(f"Error connecting to database: {e}")
+            return None
+
+    def _create_table(self):
+        # --- MODIFIED ---
+        # Added access_count and total_time_spent_hrs
+        create_table_sql = """
         CREATE TABLE IF NOT EXISTS files (
             path TEXT PRIMARY KEY,
             name TEXT,
@@ -23,59 +30,65 @@ class MetadataDB:
             created_at TEXT,
             modified_at TEXT,
             accessed_at TEXT,
-            active INTEGER,
+            is_deleted INTEGER DEFAULT 0,
+            access_count INTEGER DEFAULT 0,
+            total_time_spent_hrs REAL DEFAULT 0.0,
             extra_json TEXT
-        )
-        ''')
-        self.conn.commit()
+        );
+        """
+        try:
+            c = self.conn.cursor()
+            c.execute(create_table_sql)
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logging.error(f"Error creating table: {e}")
 
-    def upsert(self, meta: Dict):
-        cur = self.conn.cursor()
-        cur.execute('''
-        INSERT INTO files (path,name,size,created_at,modified_at,accessed_at,active,extra_json)
-        VALUES (?,?,?,?,?,?,?,?)
-        ON CONFLICT(path) DO UPDATE SET
-            name=excluded.name,
-            size=excluded.size,
-            created_at=excluded.created_at,
-            modified_at=excluded.modified_at,
-            accessed_at=excluded.accessed_at,
-            active=excluded.active,
-            extra_json=excluded.extra_json
-        ''', (
-            meta.get('path'), meta.get('name'), meta.get('size'),
-            # Ensure timestamps are in ISO format
-            meta.get('created_at'), meta.get(
-                'modified_at'), meta.get('accessed_at'),
-            1, meta.get('extra_json')
-        ))
-        self.conn.commit()
+    def upsert(self, meta: dict):
+        """
+        Inserts or replaces a record in the files table.
+        'meta' is a dictionary matching the file_metadata structure.
+        """
+        # --- MODIFIED ---
+        # Updated to include new columns
+        sql = ''' INSERT OR REPLACE INTO files(
+                    path, name, size, created_at, modified_at, accessed_at, 
+                    is_deleted, access_count, total_time_spent_hrs, extra_json
+                )
+                VALUES(
+                    :path, :name, :size, :created_at, :modified_at, :accessed_at,
+                    0, :access_count, :total_time_spent_hrs, :extra_json
+                ) '''
+        try:
+            c = self.conn.cursor()
+            c.execute(sql, meta)
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logging.error(f"Error upserting data for {meta.get('path')}: {e}")
 
     def mark_deleted(self, path: str):
-        cur = self.conn.cursor()
-        cur.execute('UPDATE files SET active=0 WHERE path=?', (path,))
-        self.conn.commit()
+        """Marks a file as deleted instead of removing it."""
+        sql = ''' UPDATE files SET is_deleted = 1 WHERE path = ? '''
+        try:
+            c = self.conn.cursor()
+            c.execute(sql, (path,))
+            self.conn.commit()
+        except sqlite3.Error as e:
+            logging.error(f"Error marking file as deleted {path}: {e}")
 
-    def fetch_all_active(self):
-        cur = self.conn.cursor()
-        cur.execute(
-            'SELECT path,name,size,created_at,modified_at,accessed_at FROM files WHERE active=1')
-        return cur.fetchall()
-
-    def get(self, path: str) -> Optional[Dict]:
-        cur = self.conn.cursor()
-        cur.execute('SELECT * FROM files WHERE path=?', (path,))
-        row = cur.fetchone()
-        if not row:
+    def get_modified_time(self, path: str):
+        """Gets the stored modified_at time for a file."""
+        sql = ''' SELECT modified_at FROM files WHERE path = ? AND is_deleted = 0 '''
+        try:
+            c = self.conn.cursor()
+            c.execute(sql, (path,))
+            result = c.fetchone()
+            if result:
+                return result[0]
             return None
-        cols = [d[0] for d in cur.description]
-        return dict(zip(cols, row))
+        except sqlite3.Error as e:
+            logging.error(f"Error getting modified time for {path}: {e}")
+            return None
 
-    # --- NEW METHOD ---
-    def get_modified_time(self, path: str) -> Optional[str]:
-        """Gets the stored modified time (ISO format) for a file."""
-        cur = self.conn.cursor()
-        cur.execute(
-            'SELECT modified_at FROM files WHERE path=? AND active=1', (path,))
-        row = cur.fetchone()
-        return row[0] if row else None
+    def close(self):
+        if self.conn:
+            self.conn.close()
