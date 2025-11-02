@@ -1,6 +1,8 @@
 watchdog
-python-docx
-pdfplumber
+llama-index-core
+llama-index-vector-stores-chroma
+llama-index-embeddings-huggingface
+chromadb
 sentence-transformers
-scikit-learn
-joblib
+python-docx
+PyPDF2
