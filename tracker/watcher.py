@@ -243,4 +243,4 @@ if __name__ == '__main__':
 
     except Exception as e:
         logging.error(
-            f"🔥🔥🔥 FATAL STARTUP ERROR: {e}\n{traceFback.format_exc()}")
+            f"🔥🔥🔥 FATAL STARTUP ERROR: {e}\n{traceback.format_exc()}")
