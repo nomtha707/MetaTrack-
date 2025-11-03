@@ -93,8 +93,15 @@ def search_endpoint():
 
         # --- 1. "THINK": Ask the LLM agent for a plan ---
         try:
-            full_prompt = AGENT_SYSTEM_PROMPT + "\nUser Query: " + query_text
-            response = agent_model.generate_content(full_prompt)
+            # --- ✅ THIS IS THE NEW, MORE ROBUST PROMPT ---
+            today_date = datetime.now().strftime("%Y-%m-%d")
+            # We construct a single "user" prompt containing all context
+            user_prompt = f"Today's date is {today_date}. User query is: '{query_text}'"
+            # --- END OF NEW PART ---
+
+            # Send the prompt as a "user" message.
+            # The system instruction is already set.
+            response = agent_model.generate_content(user_prompt)
             plan_json = response.text
             plan = json.loads(plan_json)
         except Exception as e:
@@ -113,18 +120,15 @@ def search_endpoint():
         if semantic_query:
             # --- HYBRID SEARCH (Semantic + SQL Filter) ---
             query_vector = embedder.embed(semantic_query)
-            # Fetch Top 20 to get a good candidate pool
             vector_results = vstore.query(query_vector, top_k=20)
             search_paths = [res['path'] for res in vector_results]
 
             if not search_paths:
                 return jsonify([])
 
-            # Filter the 20 candidates using the agent's SQL
             final_results = db.get_files_by_path_and_filter(
                 search_paths, sql_filter)
 
-            # Re-apply the semantic score to the filtered results
             path_to_score = {res['path']: res['score']
                              for res in vector_results}
             final_results_with_score = []
@@ -133,21 +137,15 @@ def search_endpoint():
                 row_with_score['score'] = path_to_score.get(row['path'], 0)
                 final_results_with_score.append(row_with_score)
 
-            # Sort by the semantic score, highest first
             final_results_with_score.sort(
                 key=lambda x: x['score'], reverse=True)
 
-            # --- THIS IS THE FIX for "Top 5" ---
-            # Finally, return only the top 5 of the filtered/sorted list
             return jsonify(final_results_with_score[:5])
 
         else:
             # --- PURE METADATA SEARCH (No Semantic Query) ---
-            # --- THIS IS THE FIX for "Recently Modified" ---
-            # Call our new database function that only uses the SQL filter
             final_results = db.get_files_by_filter_only(sql_filter)
-            # Add the limit here!
-            return jsonify(final_results[:5])
+            return jsonify(final_results[:5])  # Limit to 5
 
     except Exception as e:
         logging.error(f"Error during search: {e}\n{traceback.format_exc()}")
@@ -259,10 +257,13 @@ if __name__ == '__main__':
         vstore = SimpleVectorStore(path=config.EMBEDDINGS_PATH)
         logging.info("All local components loaded.")
 
-        # --- 3. ⚠️ MODIFIED MODEL NAME ---
+        # --- 3. ✅ MODIFIED: Initialize the agent "brain" ---
         logging.info("Initializing agent brain (Gemini)...")
-        # Use the newer, faster model that is available on the free tier
-        agent_model = genai.GenerativeModel('gemini-2.5-flash')
+        # We set the "system instruction" here, when we create the model
+        agent_model = genai.GenerativeModel(
+            'gemini-2.5-flash',
+            system_instruction=AGENT_SYSTEM_PROMPT
+        )
         logging.info("Agent brain is online.")
 
         # --- 4. Start the Flask Server in a new thread ---
