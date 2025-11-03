@@ -3,3 +3,8 @@ sentence-transformers
 numpy
 python-docx
 PyPDF2
+scikit-learn
+Flask
+requests
+google-generativeai
+python-dotenv

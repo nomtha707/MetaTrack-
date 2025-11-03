@@ -1,18 +1,23 @@
 import os
 import sys
+from dotenv import load_dotenv  # <-- NEW IMPORT
+
+# --- LOAD ENVIRONMENT VARIABLES ---
+# This looks for a .env file in the project root and loads it.
+# We go up one level from /tracker to find the .env file.
+dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+load_dotenv(dotenv_path)
+# ----------------------------------
 
 
 def get_base_dir():
     """Get the base directory for the application (script or .exe)"""
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         # Running as a PyInstaller bundle (.exe)
-        # sys.executable is .../dist/MetaTracker.exe
-        # We want the .../dist folder as the base.
         return os.path.dirname(sys.executable)
     else:
         # Running as a normal script (.py)
         # __file__ is .../project/tracker/config.py
-        # os.path.dirname(__file__) is .../project/tracker
         # We want the .../project folder, so we go up one level.
         return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -26,7 +31,6 @@ WATCH_PATH = r"D:/College_IIITDWD"  # Your hardcoded watch path
 
 # 3. Define specific file paths
 DB_PATH = os.path.join(DB_DIR, "metadata.db")
-# This is the base name for our vector store files (e.g., embeddings.npy, embeddings.json)
 EMBEDDINGS_PATH = os.path.join(DB_DIR, "embeddings")
 
 # 4. Configuration for model
@@ -34,3 +38,8 @@ EMBEDDING_BACKEND = 'sentence-transformers'
 
 # 5. Create the database directory if it doesn't exist
 os.makedirs(DB_DIR, exist_ok=True)
+
+# 6. Get API Key from environment
+# (The watcher.py will import this and use it)
+# We no longer hardcode the key here.
+API_KEY = os.environ.get("GOOGLE_API_KEY")
