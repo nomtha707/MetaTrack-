@@ -1,23 +1,20 @@
 import os
 import time
+import json
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from pathlib import Path
 from datetime import datetime
 import tracker.config as config
 from tracker.metadata_db import MetadataDB
 from tracker.extractor import extract_text
+from tracker.embedder import Embedder
+from tracker.vectorstore import SimpleVectorStore
 
-# --- NEW LOGGING & TRACEBACK ---
+# --- LOGGING SETUP ---
 import logging
 import traceback
 
-# --- NEW LLAMA-INDEX IMPORTS ---
-from llama_index.core import Settings, StorageContext, VectorStoreIndex, Document
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-from llama_index.vector_stores.chroma import ChromaVectorStore
-import chromadb
-
-# --- LOGGING SETUP ---
 log_path = os.path.join(config.BASE_DIR, 'watcher.log')
 logging.basicConfig(
     filename=log_path,
@@ -46,11 +43,10 @@ def file_metadata(path: str):
 
 
 class Handler(FileSystemEventHandler):
-    # --- MODIFIED __init__ ---
-    # Removed embedder and vstore, added LlamaIndex 'index'
-    def __init__(self, db, index):
+    def __init__(self, db, embedder, vstore):
         self.db = db
-        self.index = index
+        self.embedder = embedder
+        self.vstore = vstore
         self.excluded_dirs = ['.venv', 'site-packages',
                               '__pycache__', '.git', '.vscode', 'db', 'model']
         self.valid_extensions = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf')
@@ -70,55 +66,49 @@ class Handler(FileSystemEventHandler):
             return True
         return False
 
-    # --- MODIFIED process_file ---
-    # Implements the new LlamaIndex/ChromaDB indexing pipeline
-    def process_file(self, path):
-        """Processes a file for indexing in both SQLite and ChromaDB."""
+    def process_file(self, path, check_modified_time=False):
+        """Processes a file for indexing."""
         try:
             if self._is_path_excluded(path):
                 return
 
             if not os.path.exists(path):
-                logging.warning(f"File not found, skipping: {path}")
                 return
 
-            # 1. Extract text (Keep your existing extractor.py logic)
-            logging.info(f"Extracting text from: {path}")
+            current_meta = file_metadata(path)
+            if not current_meta:
+                return
+
+            if check_modified_time:
+                stored_mod_time_str = self.db.get_modified_time(path)
+                if stored_mod_time_str:
+                    if current_meta['modified_at'] <= stored_mod_time_str:
+                        return
+
+            MAX_FILE_SIZE = 100 * 1024 * 1024
+            if current_meta['size'] > MAX_FILE_SIZE:
+                logging.warning(
+                    f"Skipping large file ({current_meta['size'] / (1024*1024):.2f} MB): {path}")
+                return
+
+            logging.info(f"Processing: {path}")
+            logging.info(f"  Extracting text...")
             text = extract_text(path)
+            logging.info(f"  Text extracted (length: {len(text)}).")
 
-            # 2. Get file metadata (Keep your existing logic)
-            meta = file_metadata(path)
-            if not meta:
-                logging.error(f"Could not get metadata for: {path}")
-                return
+            logging.info(f"  Generating embedding...")
+            emb = self.embedder.embed(text)
+            logging.info(f"  Embedding generated (shape: {emb.shape}).")
 
-            # 3. --- NEW ---
-            #    Add default behavioral data to the metadata
-            meta['access_count'] = 0
-            meta['total_time_spent_hrs'] = 0.0
+            logging.info(f"  Upserting metadata to DB...")
+            self.db.upsert(current_meta)
+            logging.info(f"  Metadata upserted.")
 
-            # 4. Upsert to SQLite (Use your existing MetadataDB class)
-            self.db.upsert(meta)
+            logging.info(f"  Upserting embedding to VectorStore...")
+            self.vstore.upsert(path, emb)
+            logging.info(f"  Embedding upserted.")
 
-            # 5. --- NEW ---
-            #    Create a LlamaIndex Document object.
-            #    The 'doc_id' MUST be the file path for updates to work.
-            document = Document(
-                text=text,
-                doc_id=path,
-                metadata={
-                    'path': path,
-                    'name': meta.get('name'),
-                    'created_at': meta.get('created_at'),
-                    'modified_at': meta.get('modified_at'),
-                    'size': meta.get('size')
-                }
-            )
-
-            # 6. --- NEW ---
-            #    Insert the document into LlamaIndex (which handles embedding and saving to ChromaDB)
-            self.index.insert(document)
-            logging.info(f"Indexed (Chroma/SQLite): {path}")
+            logging.info(f"Indexed: {path}")
 
         except Exception as e:
             error_message = f"❌ Error processing {path}: {e}\n{traceback.format_exc()}"
@@ -127,81 +117,40 @@ class Handler(FileSystemEventHandler):
     def on_created(self, event):
         if event.is_directory:
             return
-        self.process_file(event.src_path)
+        self.process_file(event.src_path, check_modified_time=False)
 
     def on_modified(self, event):
         if event.is_directory:
             return
-        self.process_file(event.src_path)
+        self.process_file(event.src_path, check_modified_time=False)
 
-    # --- MODIFIED on_deleted ---
     def on_deleted(self, event):
         if event.is_directory:
             return
-
         path = event.src_path
-        if self._is_path_excluded(path):
-            return
-
-        try:
-            # 1. Mark as deleted in SQLite (Keep existing logic)
+        if not self._is_path_excluded(path):
             self.db.mark_deleted(path)
-
-            # 2. --- NEW ---
-            #    Delete the document from LlamaIndex/ChromaDB
-            self.index.delete_ref_doc(path, delete_from_docstore=True)
-            logging.info(f"Deleted (Chroma/SQLite): {path}")
-        except Exception as e:
-            logging.error(
-                f"Error deleting {path}: {e}\n{traceback.format_exc()}")
+            self.vstore.delete(path)
+            logging.info(f'Deleted from index: {path}')
 
 
-# --- MODIFIED main block ---
 if __name__ == '__main__':
     try:
         logging.info("--- Watcher starting up... ---")
 
-        # 1. Define paths (e.g., from a config file)
-        SQLITE_DB_PATH = config.DB_PATH
-        CHROMA_DB_PATH = os.path.join(config.DB_DIR, "chroma_db")
-        EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
-        WATCH_PATH = config.WATCH_PATH
+        path = config.WATCH_PATH
+        db = MetadataDB(config.DB_PATH)
+        embedder = Embedder(backend=config.EMBEDDING_BACKEND)
+        vstore = SimpleVectorStore(path=config.EMBEDDINGS_PATH)
+        event_handler = Handler(db, embedder, vstore)
 
-        # 2. Set up the embedding model (use CPU to be safe)
-        logging.info(f"Initializing embedding model: {EMBED_MODEL_NAME}")
-        Settings.embed_model = HuggingFaceEmbedding(
-            model_name=EMBED_MODEL_NAME,
-            device="cpu"
-        )
-
-        # 3. Set up the LlamaIndex Storage
-        logging.info(f"Initializing SQLite DB at: {SQLITE_DB_PATH}")
-        db_instance = MetadataDB(SQLITE_DB_PATH)  # Your existing SQLite class
-
-        logging.info(f"Initializing ChromaDB at: {CHROMA_DB_PATH}")
-        chroma_client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-        chroma_collection = chroma_client.get_or_create_collection(
-            "document_store")
-        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-        storage_context = StorageContext.from_defaults(
-            vector_store=vector_store)
-
-        # 4. Create the main LlamaIndex Index object
-        logging.info("Loading/Creating VectorStoreIndex...")
-        index = VectorStoreIndex.from_documents(
-            [], storage_context=storage_context
-        )
-        logging.info("VectorStoreIndex ready.")
-
-        # --- Instantiate Handler with new 'index' object ---
-        event_handler = Handler(db_instance, index)
-
-        # --- Initial Scan ---
-        logging.info(f"Performing initial scan of {WATCH_PATH}...")
+        logging.info(f"Performing initial scan of {path}...")
+        logging.info(
+            f"Performing initial scan of {path} (only processing new/modified files)...")
         excluded_dirs = event_handler.excluded_dirs
 
-        if os.path.exists(WATCH_PATH):
-            for root, dirs, files in os.walk(WATCH_PATH, topdown=True):
+        if os.path.exists(path):
+            for root, dirs, files in os.walk(path, topdown=True):
                 dirs[:] = [
                     d for d in dirs if d not in excluded_dirs and not d.startswith('.')]
 
@@ -213,24 +162,21 @@ if __name__ == '__main__':
                 for filename in files:
                     try:
                         file_path = os.path.join(root, filename)
-                        # --- MODIFIED ---
-                        # Call new process_file, no check_modified_time needed
-                        # LlamaIndex 'insert' is an upsert, so it's safe to call
-                        event_handler.process_file(file_path)
+                        event_handler.process_file(
+                            file_path, check_modified_time=True)
                     except Exception as e:
                         logging.error(
                             f"Error during initial scan of {filename}: {e}\n{traceback.format_exc()}")
 
             logging.info("Initial scan complete.")
         else:
-            logging.error(f"Error: Watch path '{WATCH_PATH}' does not exist.")
+            logging.error(f"Error: Watch path '{path}' does not exist.")
             exit()
-        # --- End Initial Scan ---
 
         observer = Observer()
-        observer.schedule(event_handler, WATCH_PATH, recursive=True)
+        observer.schedule(event_handler, path, recursive=True)
         observer.start()
-        logging.info(f"Watcher started on {WATCH_PATH}.")
+        logging.info(f"Watcher started on {path}.")
 
         try:
             while True:
@@ -238,8 +184,9 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             logging.info("Watcher stopped by user.")
             observer.stop()
+
         observer.join()
-        db_instance.close()
+        db.close()
 
     except Exception as e:
         logging.error(

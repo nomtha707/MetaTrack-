@@ -1,11 +1,10 @@
 import os
 import numpy as np
-import sys  # --- Import sys
+import sys
 import traceback
+import logging
 
-BACKEND = os.environ.get('EMBEDDING_BACKEND', 'sentence-transformers')
-
-# --- NEW FUNCTION TO GET MODEL PATH ---
+# --- FUNCTION TO GET MODEL PATH ---
 
 
 def get_model_path():
@@ -16,13 +15,8 @@ def get_model_path():
     """
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         # Running as a bundled .exe
-        # We will bundle the model into a 'model' folder next to the .exe
-        # sys.executable is ...project/dist/MetaTracker.exe
-        # os.path.dirname(sys.executable) is ...project/dist
         bundle_dir = os.path.dirname(sys.executable)
         model_dir = os.path.join(bundle_dir, 'model', 'all-MiniLM-L6-v2')
-
-        # Check if our bundled model exists
         if os.path.isdir(model_dir):
             return model_dir
 
@@ -39,31 +33,28 @@ class Embedder:
             try:
                 from sentence_transformers import SentenceTransformer
 
-                # --- THIS IS THE UPDATED PART ---
                 model_name_or_path = get_model_path()
+                logging.info(f"Loading model from: {model_name_or_path}")
+                # This print statement is the one you saw in your console
                 print(f"Loading model from: {model_name_or_path}")
-                # --- END UPDATED PART ---
 
                 self.model = SentenceTransformer(model_name_or_path)
+                self.dim_size = 384
             except Exception as e:
-                print(
-                    'SentenceTransformers not available, falling back to tfidf. Error:', e)
-                # Log this error if it happens
-                import logging
                 logging.error(
                     f"Failed to load SentenceTransformer: {e}\n{traceback.format_exc()}")
                 self.model = None
-                self.backend = 'tfidf'
+                self.backend = 'fallback'
+                self.dim_size = 32  # Fallback dimension
         else:
             self.model = None
-            # tfidf will be created lazily in VectorStore
+            self.backend = 'fallback'
+            self.dim_size = 32
 
     def embed(self, text: str):
         if not text:
-            # --- FIX FOR DATABASE MISMATCH ---
-            # Return 384-dim zero vector if ST is intended, otherwise simple hash
-            return np.zeros(384, dtype=float) if self.backend == 'sentence-transformers' else np.zeros(32, dtype=float)
-            # --- END FIX ---
+            # Return zero vector of the correct dimension
+            return np.zeros(self.dim_size, dtype=float)
 
         if self.backend == 'sentence-transformers' and self.model is not None:
             emb = self.model.encode(text, show_progress_bar=False)
