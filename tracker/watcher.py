@@ -1,4 +1,4 @@
-# tracker/watcher.py (Full RAG Version)
+# tracker/watcher.py (Agent Version - Patched)
 import os
 import time
 import json
@@ -15,7 +15,7 @@ from flask import Flask, request, jsonify
 import logging
 import traceback
 
-# --- AGENT IMPORTS ---
+# --- NEW AGENT IMPORTS ---
 import google.generativeai as genai
 # -------------------------
 
@@ -31,34 +31,45 @@ log_path = os.path.join(config.BASE_DIR, 'watcher.log')
 logging.basicConfig(filename=log_path, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- AGENT PROMPT 1: SEARCH PLANNER (unchanged) ---
+# --- AGENT PROMPT (unchanged) ---
 AGENT_SYSTEM_PROMPT = """
 You are a "Local File Search Agent". Your job is to analyze a user's natural language
 query and convert it into a JSON plan that a Python script can execute.
-(Rest of prompt is the same...)
-...
+
+The script has two data sources:
+1. A semantic vector store (for finding files by *meaning*).
+2. An SQLite 'files' table (for *filtering* by metadata).
+
+The 'files' table has these columns: 
+path, name, size, created_at, modified_at, access_count, total_time_spent_hrs.
+
+Respond ONLY with a single, minified JSON object. Do not add markdown or any other text.
+
+The JSON plan MUST have two keys:
+1. "semantic_query": A string. This is the re-phrased query to be sent to the vector store.
+   If the user is ONLY asking for metadata (e.g., "newest files"), set this to null.
+2. "sql_filter": A string. This is a valid SQLite `WHERE` clause.
+   - Use 'path' for file types (e.g., "path LIKE '%.py'").
+   - Use metadata columns for sorting/filtering (e.g., "modified_at > '2025-10-30'").
+   - If no filter is needed, use "1=1".
+   - DO NOT add 'ORDER BY' here.
+
+Examples:
+User Query: file on prolog system
+{"semantic_query": "document about the Prolog programming language", "sql_filter": "1=1"}
+
+User Query: python script about machine learning
+{"semantic_query": "python code for machine learning", "sql_filter": "path LIKE '%.py'"}
+
+User Query: Find my most recently modified document
+{"semantic_query": null, "sql_filter": "path LIKE '%.docx' ORDER BY modified_at DESC LIMIT 1"}
+
+User Query: recent presentations
+{"semantic_query": "presentations", "sql_filter": "path LIKE '%.pptx' ORDER BY modified_at DESC"}
+
 User Query: misspelledw wordd
 {"semantic_query": "misspelled word", "sql_filter": "1=1"}
 """
-
-# --- AGENT PROMPT 2: RAG ANSWER GENERATOR (NEW) ---
-RAG_SYSTEM_PROMPT = """
-You are a helpful AI assistant. Your task is to answer the user's question based *only*
-on the provided context. Do not use any outside knowledge. If the answer is not in the
-context, say so. Be concise.
-
-CONTEXT:
----
-{context_text}
----
-
-USER'S QUESTION:
-{query_text}
-
-ANSWER:
-"""
-# --- END NEW PROMPT ---
-
 
 # --- FLASK SERVER APP ---
 app = Flask(__name__)
@@ -70,7 +81,6 @@ def search_endpoint():
 
     data = request.json
     query_text = data.get('query')
-    mode = data.get('mode', 'find')
 
     if not query_text:
         return jsonify({"error": "No query provided"}), 400
@@ -79,18 +89,20 @@ def search_endpoint():
 
     response = None
     try:
-        logging.info(f"Agent received query: '{query_text}' in mode: '{mode}'")
+        logging.info(f"Agent received query: {query_text}")
 
         # --- 1. "THINK": Ask the LLM agent for a plan ---
         try:
+            # --- ✅ THIS IS THE NEW, MORE ROBUST PROMPT ---
             today_date = datetime.now().strftime("%Y-%m-%d")
+            # We construct a single "user" prompt containing all context
             user_prompt = f"Today's date is {today_date}. User query is: '{query_text}'"
+            # --- END OF NEW PART ---
+
+            # Send the prompt as a "user" message.
+            # The system instruction is already set.
             response = agent_model.generate_content(user_prompt)
             plan_json = response.text
-
-            if plan_json.startswith("```json"):
-                plan_json = plan_json.strip("```json\n").strip("```")
-
             plan = json.loads(plan_json)
         except Exception as e:
             raw_response_text = response.text if response else "N/A (call failed)"
@@ -100,104 +112,45 @@ def search_endpoint():
 
         logging.info(f"Agent Plan: {plan}")
 
+        semantic_query = plan.get("semantic_query")
         sql_filter = plan.get("sql_filter", "1=1")
 
-        # --- 2. "ACT": Execute based on MODE ---
+        # --- 2. "ACT": Execute the plan ---
 
-        if mode == "ask":
-            # --- RAG "ASK" MODE ---
-            logging.info("Executing 'ASK' (RAG) logic...")
-
-            # 1. Embed the user's raw query to find the best file
-            query_vector = embedder.embed(query_text)
+        if semantic_query:
+            # --- HYBRID SEARCH (Semantic + SQL Filter) ---
+            query_vector = embedder.embed(semantic_query)
             vector_results = vstore.query(query_vector, top_k=20)
             search_paths = [res['path'] for res in vector_results]
 
             if not search_paths:
-                return jsonify({"answer": "Sorry, I couldn't find any files matching that.", "source": None})
+                return jsonify([])
 
-            # 2. Filter the candidates using the agent's SQL plan
-            final_results_from_db = db.get_files_by_path_and_filter(
+            final_results = db.get_files_by_path_and_filter(
                 search_paths, sql_filter)
 
-            if not final_results_from_db:
-                return jsonify({"answer": "I found some files, but none matched your filters.", "source": None})
-
-            # --- THIS IS THE FIX ---
-            # Re-apply the semantic score, just like in "Find" mode
             path_to_score = {res['path']: res['score']
                              for res in vector_results}
             final_results_with_score = []
-            for row in final_results_from_db:
+            for row in final_results:
                 row_with_score = dict(row)
                 row_with_score['score'] = path_to_score.get(row['path'], 0)
                 final_results_with_score.append(row_with_score)
 
-            # Sort by the semantic score, highest first
             final_results_with_score.sort(
                 key=lambda x: x['score'], reverse=True)
-            # --- END OF FIX ---
 
-            # 3. Get the single best file after filtering AND sorting
-            top_result = final_results_with_score[0]  # Get the top match
-            top_path = top_result['path']
-            logging.info(f"RAG: Retrieving text from: {top_path}")
+            return jsonify(final_results_with_score[:5])
 
-            context_text = extract_text(top_path)
-            if not context_text:
-                return jsonify({"answer": "Sorry, I found the file but couldn't read its content.", "source": top_path})
-
-            # 4. Generate the answer
-            rag_prompt = RAG_SYSTEM_PROMPT.format(
-                context_text=context_text, query_text=query_text)
-            gen_response = agent_model.generate_content(rag_prompt)
-
-            return jsonify({
-                "answer": gen_response.text,
-                "source": top_path
-            })
-
-        elif mode == "find":
-            # --- "FIND" MODE ---
-            logging.info("Executing 'FIND' (Search) logic...")
-
-            # --- THIS IS THE FIX ---
-            semantic_query = plan.get("semantic_query")
-            # --- END OF FIX ---
-
-            if semantic_query:
-                # Hybrid Search
-                query_vector = embedder.embed(semantic_query)
-                vector_results = vstore.query(query_vector, top_k=20)
-                search_paths = [res['path'] for res in vector_results]
-
-                if not search_paths:
-                    return jsonify([])
-
-                final_results_from_db = db.get_files_by_path_and_filter(
-                    search_paths, sql_filter)
-
-                path_to_score = {res['path']: res['score']
-                                 for res in vector_results}
-                final_results_with_score = []
-                for row in final_results_from_db:
-                    row_with_score = dict(row)
-                    row_with_score['score'] = path_to_score.get(row['path'], 0)
-                    final_results_with_score.append(row_with_score)
-
-                final_results_with_score.sort(
-                    key=lambda x: x['score'], reverse=True)
-                return jsonify(final_results_with_score[:5])
-
-            else:
-                # Pure Metadata Search
-                final_results_from_db = db.get_files_by_filter_only(sql_filter)
-                return jsonify(final_results_from_db[:5])
+        else:
+            # --- PURE METADATA SEARCH (No Semantic Query) ---
+            final_results = db.get_files_by_filter_only(sql_filter)
+            return jsonify(final_results[:5])  # Limit to 5
 
     except Exception as e:
         logging.error(f"Error during search: {e}\n{traceback.format_exc()}")
         return jsonify({"error": "Internal server error"}), 500
-    
+
 
 def run_flask_app():
     logging.info("Starting Flask server on http://127.0.0.1:5000")
