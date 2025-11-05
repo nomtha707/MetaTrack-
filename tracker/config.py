@@ -1,13 +1,6 @@
 import os
 import sys
-from dotenv import load_dotenv  # <-- NEW IMPORT
-
-# --- LOAD ENVIRONMENT VARIABLES ---
-# This looks for a .env file in the project root and loads it.
-# We go up one level from /tracker to find the .env file.
-dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-load_dotenv(dotenv_path)
-# ----------------------------------
+from dotenv import load_dotenv
 
 
 def get_base_dir():
@@ -17,13 +10,15 @@ def get_base_dir():
         return os.path.dirname(sys.executable)
     else:
         # Running as a normal script (.py)
-        # __file__ is .../project/tracker/config.py
-        # We want the .../project folder, so we go up one level.
         return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 # 1. Get the single, reliable base directory
 BASE_DIR = get_base_dir()
+
+# 2. Load the .env file from the BASE_DIR
+dotenv_path = os.path.join(BASE_DIR, '.env')
+load_dotenv(dotenv_path)
 
 # 2. Define other main directories relative to BASE_DIR
 DB_DIR = os.path.join(BASE_DIR, 'db')

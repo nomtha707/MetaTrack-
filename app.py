@@ -1,4 +1,4 @@
-# app.py (Find-Only GUI Client)
+# app.py (Beautified GUI Client)
 import customtkinter as ctk
 import requests
 import os
@@ -35,11 +35,18 @@ class App(ctk.CTk):
 
         # --- Window Setup ---
         self.title("MetaTrack Search")
-        self.geometry("700x550")
+        self.geometry("800x600")  # Made window a bit bigger
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)  # Row 2 (results) will expand
 
         ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("blue")
+
+        # --- Define Fonts ---
+        self.link_font = ctk.CTkFont(family="Arial", size=16, weight="bold")
+        self.path_font = ctk.CTkFont(family="Arial", size=12, slant="italic")
+        self.info_font = ctk.CTkFont(family="Arial", size=12, weight="bold")
+        self.status_font = ctk.CTkFont(family="Arial", size=12)
 
         # --- 1. Top Frame (Query) ---
         self.top_frame = ctk.CTkFrame(self, corner_radius=0)
@@ -49,7 +56,9 @@ class App(ctk.CTk):
 
         self.entry = ctk.CTkEntry(
             self.top_frame,
-            placeholder_text="Enter your query..."
+            placeholder_text="Enter your query...",
+            height=35,
+            font=("Arial", 14)
         )
         self.entry.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         self.entry.bind("<Return>", self.search_event)  # Bind Enter key
@@ -57,14 +66,25 @@ class App(ctk.CTk):
         self.search_button = ctk.CTkButton(
             self.top_frame,
             text="Search",
-            command=self.search_event
+            command=self.search_event,
+            height=35
         )
         self.search_button.grid(row=0, column=1, padx=(0, 10), pady=10)
 
+        # --- NEW: Clear Button ---
+        self.clear_button = ctk.CTkButton(
+            self.top_frame,
+            text="Clear",
+            command=self.clear_results_event,
+            height=35,
+            fg_color="gray"
+        )
+        self.clear_button.grid(row=0, column=2, padx=(0, 10), pady=10)
+
         # --- 2. Status Bar ---
         self.status_label = ctk.CTkLabel(
-            self, text="Ready.", text_color="gray")
-        self.status_label.grid(row=1, column=0, sticky="ew", padx=10, pady=0)
+            self, text="Ready. (Make sure MetaTrack.exe is running!)", text_color="gray", font=self.status_font)
+        self.status_label.grid(row=1, column=0, sticky="ew", padx=20, pady=0)
 
         # --- 3. Results Frame (Scrollable) ---
         self.scrollable_frame = ctk.CTkScrollableFrame(self)
@@ -80,20 +100,18 @@ class App(ctk.CTk):
 
         self.status_label.configure(text="Searching...", text_color="yellow")
         self.search_button.configure(state="disabled")
+        self.clear_button.configure(state="disabled")
 
-        # Run the search in a thread to keep the GUI responsive
         threading.Thread(target=self.run_search,
                          args=(query,), daemon=True).start()
 
     def run_search(self, query):
         """The actual search logic."""
         try:
-            # No 'mode' is sent anymore
             response = requests.post(SERVER_URL, json={'query': query})
 
             if response.status_code == 200:
                 results = response.json()
-                # Pass results back to the main thread to update the UI
                 self.after(0, self.display_results, results)
             else:
                 error_msg = response.json().get('error', 'Unknown server error')
@@ -111,16 +129,24 @@ class App(ctk.CTk):
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
 
+    def clear_results_event(self):
+        """Called by the 'Clear' button."""
+        self.clear_results()
+        self.entry.delete(0, 'end')
+        self.status_label.configure(text="Ready.", text_color="gray")
+
     def display_error(self, message):
         """Displays an error message in the status bar."""
         self.clear_results()
         self.status_label.configure(text=message, text_color="red")
         self.search_button.configure(state="normal")
+        self.clear_button.configure(state="normal")
 
     def display_results(self, results):
         """Displays the results in the scrollable frame."""
         self.clear_results()
         self.search_button.configure(state="normal")
+        self.clear_button.configure(state="normal")
 
         if not results:
             self.status_label.configure(
@@ -130,12 +156,10 @@ class App(ctk.CTk):
         self.status_label.configure(
             text=f"Found {len(results)} matching files.", text_color="green")
 
-        # --- "Find" Mode: Display clickable links ---
         for i, res in enumerate(results):
             path = res.get('path', 'N/A')
             name = res.get('name', 'N/A')
 
-            # Create a frame for each result
             res_frame = ctk.CTkFrame(self.scrollable_frame, fg_color="gray14")
             res_frame.grid(row=i, column=0, sticky="ew", pady=(0, 8))
             res_frame.grid_columnconfigure(0, weight=1)
@@ -146,9 +170,10 @@ class App(ctk.CTk):
                 text=name,
                 text_color="#6495ED",  # Cornflower blue
                 cursor="hand2",
-                anchor="w"
+                anchor="w",
+                font=self.link_font  # Apply new font
             )
-            name_label.grid(row=0, column=0, sticky="w", padx=10, pady=(5, 0))
+            name_label.grid(row=0, column=0, sticky="w", padx=10, pady=(10, 0))
             name_label.bind("<Button-1>", lambda e, p=path: open_file(p))
 
             # 2. The Path (Clickable to open folder)
@@ -157,7 +182,8 @@ class App(ctk.CTk):
                 text=os.path.dirname(path),  # Show just the folder
                 text_color="gray",
                 cursor="hand2",
-                anchor="w"
+                anchor="w",
+                font=self.path_font  # Apply new font
             )
             path_label.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 5))
             path_label.bind("<Button-1>", lambda e, p=path: open_folder(p))
@@ -171,8 +197,8 @@ class App(ctk.CTk):
                 info_text += f"Modified: {res['modified_at'].split('T')[0]}"
 
             info_label = ctk.CTkLabel(
-                res_frame, text=info_text, anchor="w", text_color="gray")
-            info_label.grid(row=2, column=0, sticky="w", padx=10, pady=(0, 5))
+                res_frame, text=info_text, anchor="w", text_color="gray", font=self.info_font)
+            info_label.grid(row=2, column=0, sticky="w", padx=10, pady=(0, 10))
 
 
 if __name__ == "__main__":

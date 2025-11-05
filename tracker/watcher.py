@@ -131,6 +131,9 @@ def search_endpoint():
             final_results_from_db = db.get_files_by_path_and_filter(
                 search_paths, sql_filter)
 
+            # --- THIS IS THE FIX ---
+            # We must re-apply the score and sort the results
+
             path_to_score = {res['path']: res['score']
                              for res in vector_results}
             final_results_with_score = []
@@ -139,15 +142,19 @@ def search_endpoint():
                 row_with_score['score'] = path_to_score.get(row['path'], 0)
                 final_results_with_score.append(row_with_score)
 
+            # Sort by the semantic score, highest first
             final_results_with_score.sort(
                 key=lambda x: x['score'], reverse=True)
+
+            # --- END OF FIX ---
+
             # Return the top 5 as a LIST
             return jsonify(final_results_with_score[:5])
 
         else:
             # Pure Metadata Search
+            # (This part is fine)
             final_results_from_db = db.get_files_by_filter_only(sql_filter)
-            # Return the top 5 as a LIST
             return jsonify(final_results_from_db[:5])
 
     except Exception as e:
