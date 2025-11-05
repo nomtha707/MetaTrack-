@@ -1,4 +1,4 @@
-# tracker/watcher.py (Agent Version - Patched)
+# tracker/watcher.py (Find-Only Server)
 import os
 import time
 import json
@@ -15,7 +15,7 @@ from flask import Flask, request, jsonify
 import logging
 import traceback
 
-# --- NEW AGENT IMPORTS ---
+# --- AGENT IMPORTS ---
 import google.generativeai as genai
 # -------------------------
 
@@ -31,7 +31,7 @@ log_path = os.path.join(config.BASE_DIR, 'watcher.log')
 logging.basicConfig(filename=log_path, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- AGENT PROMPT (unchanged) ---
+# --- AGENT PROMPT 1: SEARCH PLANNER (The only prompt we need) ---
 AGENT_SYSTEM_PROMPT = """
 You are a "Local File Search Agent". Your job is to analyze a user's natural language
 query and convert it into a JSON plan that a Python script can execute.
@@ -50,19 +50,13 @@ path, name, size, created_at, modified_at, access_count.
 1.  Respond ONLY with a single, minified JSON object. Do not add markdown or any other text.
 2.  The JSON plan MUST have two keys: "semantic_query" and "sql_filter".
 3.  "semantic_query": This is the re-phrased query for the vector store.
-    - If the user is ONLY asking for metadata (e.g., "newest files", "files from last week"), set this to null.
+    - If the user is ONLY asking for metadata (e.g., "newest files"), set this to null.
 4.  "sql_filter": This is a valid SQLite `WHERE` clause (or "1=1" if no filter).
-    - **YOU MUST USE THE EXACT COLUMN NAMES FROM THE SCHEMA.**
-    - **To filter by a date, use the `LIKE` operator.** (e.g., `modified_at LIKE '2025-10-28%'`)
-    - **Use `modified_at` for ALL date-related queries** (e.g., "modified", "changed", "saved", "opened", "viewed").
-    - **Use `created_at` for queries about "created" or "made".**
-    - Use `path LIKE '%.pdf'` for file types.
+    - To filter by a date, use the `LIKE` operator (e.g., `modified_at LIKE '2025-10-28%'`).
+    - Use `modified_at` for ALL date-related queries (e.g., "modified", "opened").
     - Use "1=1" if no specific filter is needed.
 
 --- RELATIVE DATE RULES ---
-- "Today" is provided in the user's query (e.g., "Today is Wednesday, 2025-11-05").
-- "Last week" means the full calendar week from the previous Monday to Sunday.
-- "Last Tuesday" means the Tuesday of "last week", *not* the Tuesday of "this week".
 - (e.g., If today is Wednesday, 2025-11-05, "last week" is 2025-10-27 to 2025-11-02, and "last Tuesday" is 2025-10-28).
 
 --- EXAMPLES ---
@@ -73,55 +67,8 @@ User Query: Find my most recently modified document
 {"semantic_query": null, "sql_filter": "path LIKE '%.docx' ORDER BY modified_at DESC LIMIT 1"}
 
 User Query: (Today is Wednesday, 2025-11-05) files opened last tuesday
-(You must use 'modified_at' and the 'LIKE' operator)
 {"semantic_query": null, "sql_filter": "modified_at LIKE '2025-10-28%'"}
 """
-
-# --- AGENT PROMPT 3: CHATBOT SUMMARY (NEW) ---
-CHATBOT_SUMMARY_PROMPT = """
-You are a friendly search assistant. Your job is to answer the user's query
-in a natural, conversational paragraph, using the file search results provided.
-
---- RULES ---
-- **Pay close attention to the user's original query.**
-- If the user asks "when," your answer MUST include the dates (like 'modified_at').
-- If the user asks "which," list the file names.
-- **If the user asks for "path" or "where", list each file path on a new line.**
-- **Use bullet points (`*`) for all lists** to make them easy to read.
-- Be concise and helpful.
-
---- USER'S QUERY ---
-{query_text}
-
---- FILE SEARCH RESULTS (as JSON) ---
-{file_list_json}
-
---- EXAMPLES OF GOOD ANSWERS ---
-
-Query: "which files were modified last tuesday?"
-Friendly Answer:
-I found 5 files that were modified last Tuesday, October 28th, 2025:
-* String theory.docx (a document)
-* config.py (a Python script)
-* main.py (a Python script)
-* retrieval_service.py (a Python script)
-* file_watcher.py (a Python script)
-
-Query: "give me the path for the files consisting of prolog systems?"
-Friendly Answer:
-Certainly! Here are the paths for the files related to prolog systems:
-* D:/College_IIITDWD/Semester 5/CS304_Artificial Intelligence/Unit-5/chapter09.pdf
-* D:/College_IIITDWD/Semester 5/CS304_Artificial Intelligence/Unit-5/chapter08.pdf
-* D:/College_IIITDWD/Semester 5/CS304_Artificial Intelligence/Unit-4/chapter07.pdf
-
-Query: "which of my files consists of prolog system"
-Friendly Answer:
-I found a few documents that might be relevant to prolog systems. The top match is 'chapter09.pdf', but I also found 'chapter08.pdf' and 'chapter07.pdf'.
----
-
-Friendly Answer:
-"""
-# --- END NEW PROMPT ---
 
 # --- FLASK SERVER APP ---
 app = Flask(__name__)
@@ -133,8 +80,7 @@ def search_endpoint():
 
     data = request.json
     query_text = data.get('query')
-
-    # We no longer check for 'mode'. All queries are "find" queries.
+    # "mode" is no longer needed
 
     if not query_text:
         return jsonify({"error": "No query provided"}), 400
@@ -147,14 +93,10 @@ def search_endpoint():
 
         # --- 1. "THINK": Ask the LLM agent for a plan ---
         try:
-            # --- THIS IS THE FIX ---
             today = datetime.now()
             today_date_str = today.strftime("%Y-%m-%d")
-            day_of_week_str = today.strftime("%A")  # e.g., "Wednesday"
-
-            # This new, context-rich prompt is much easier for the AI
+            day_of_week_str = today.strftime("%A")
             user_prompt = f"Today is {day_of_week_str}, {today_date_str}. User query is: '{query_text}'"
-            # --- END OF FIX ---
 
             response = agent_model.generate_content(user_prompt)
             plan_json = response.text
@@ -174,11 +116,8 @@ def search_endpoint():
         sql_filter = plan.get("sql_filter", "1=1")
 
         # --- 2. "ACT": Execute the "Find" plan ---
-
         logging.info("Executing 'FIND' (Search) logic...")
         semantic_query = plan.get("semantic_query")
-
-        final_results_list = []  # This will hold our list of dicts
 
         if semantic_query:
             # Hybrid Search
@@ -187,7 +126,7 @@ def search_endpoint():
             search_paths = [res['path'] for res in vector_results]
 
             if not search_paths:
-                return jsonify({"answer": "Sorry, I couldn't find any files that matched."})
+                return jsonify([])
 
             final_results_from_db = db.get_files_by_path_and_filter(
                 search_paths, sql_filter)
@@ -199,31 +138,17 @@ def search_endpoint():
                 row_with_score = dict(row)
                 row_with_score['score'] = path_to_score.get(row['path'], 0)
                 final_results_with_score.append(row_with_score)
+
             final_results_with_score.sort(
                 key=lambda x: x['score'], reverse=True)
-            final_results_list = final_results_with_score[:5]  # Get the top 5
+            # Return the top 5 as a LIST
+            return jsonify(final_results_with_score[:5])
 
         else:
             # Pure Metadata Search
             final_results_from_db = db.get_files_by_filter_only(sql_filter)
-            final_results_list = final_results_from_db[:5]  # Get the top 5
-
-        # --- 3. Generate Chatbot Response ---
-        if not final_results_list:
-            return jsonify({"answer": "I looked, but I couldn't find any files matching that."})
-
-        file_list_str = json.dumps(final_results_list)
-
-        logging.info("Generating chatbot summary for file list...")
-        summary_prompt = CHATBOT_SUMMARY_PROMPT.format(
-            query_text=query_text,
-            file_list_json=file_list_str)
-        summary_response = agent_model.generate_content(summary_prompt)
-
-        return jsonify({
-            "answer": summary_response.text,
-            "source": "File Search"
-        })
+            # Return the top 5 as a LIST
+            return jsonify(final_results_from_db[:5])
 
     except Exception as e:
         logging.error(f"Error during search: {e}\n{traceback.format_exc()}")
