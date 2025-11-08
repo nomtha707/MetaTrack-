@@ -1,4 +1,4 @@
-# tracker/watcher.py (Find-Only Server)
+# tracker/watcher.py (Upgraded with Home endpoints)
 import os
 import time
 import json
@@ -10,7 +10,7 @@ import tracker.config as config
 from tracker.metadata_db import MetadataDB
 from tracker.extractor import extract_text
 from tracker.embedder import Embedder
-from tracker.vectorstore import SimpleVectorStore
+from tracker.vectorstore import SimpleVectorStore  # Back to SimpleVectorStore
 from flask import Flask, request, jsonify
 import logging
 import traceback
@@ -23,7 +23,7 @@ import google.generativeai as genai
 db = None
 embedder = None
 vstore = None
-agent_model = None  # The LLM "brain"
+agent_model = None
 # ------------------------
 
 # --- LOGGING SETUP (unchanged) ---
@@ -31,7 +31,7 @@ log_path = os.path.join(config.BASE_DIR, 'watcher.log')
 logging.basicConfig(filename=log_path, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- AGENT PROMPT 1: SEARCH PLANNER (The only prompt we need) ---
+# --- AGENT PROMPT (This is your working "Find-Only" prompt) ---
 AGENT_SYSTEM_PROMPT = """
 You are a "Local File Search Agent". Your job is to analyze a user's natural language
 query and convert it into a JSON plan that a Python script can execute.
@@ -77,33 +77,24 @@ app = Flask(__name__)
 @app.route('/search', methods=['POST'])
 def search_endpoint():
     global db, embedder, vstore, agent_model
-
     data = request.json
     query_text = data.get('query')
-    # "mode" is no longer needed
-
     if not query_text:
         return jsonify({"error": "No query provided"}), 400
     if not all([db, embedder, vstore, agent_model]):
         return jsonify({"error": "Server components not initialized"}), 500
-
     response = None
     try:
         logging.info(f"Agent received 'Find' query: '{query_text}'")
-
-        # --- 1. "THINK": Ask the LLM agent for a plan ---
         try:
             today = datetime.now()
             today_date_str = today.strftime("%Y-%m-%d")
             day_of_week_str = today.strftime("%A")
             user_prompt = f"Today is {day_of_week_str}, {today_date_str}. User query is: '{query_text}'"
-
             response = agent_model.generate_content(user_prompt)
             plan_json = response.text
-
             if plan_json.startswith("```json"):
                 plan_json = plan_json.strip("```json\n").strip("```")
-
             plan = json.loads(plan_json)
         except Exception as e:
             raw_response_text = response.text if response else "N/A (call failed)"
@@ -112,28 +103,18 @@ def search_endpoint():
             return jsonify({"error": f"Agent 'brain' failed: {e}"}), 500
 
         logging.info(f"Agent Plan: {plan}")
-
         sql_filter = plan.get("sql_filter", "1=1")
-
-        # --- 2. "ACT": Execute the "Find" plan ---
         logging.info("Executing 'FIND' (Search) logic...")
         semantic_query = plan.get("semantic_query")
 
         if semantic_query:
-            # Hybrid Search
             query_vector = embedder.embed(semantic_query)
             vector_results = vstore.query(query_vector, top_k=20)
             search_paths = [res['path'] for res in vector_results]
-
             if not search_paths:
                 return jsonify([])
-
             final_results_from_db = db.get_files_by_path_and_filter(
                 search_paths, sql_filter)
-
-            # --- THIS IS THE FIX ---
-            # We must re-apply the score and sort the results
-
             path_to_score = {res['path']: res['score']
                              for res in vector_results}
             final_results_with_score = []
@@ -141,35 +122,74 @@ def search_endpoint():
                 row_with_score = dict(row)
                 row_with_score['score'] = path_to_score.get(row['path'], 0)
                 final_results_with_score.append(row_with_score)
+            final_results_with_score.sort(key=lambda x: x['score'], reverse=True)
+            # Get the top 5 results
+            top_5_results = final_results_with_score[:5]
 
-            # Sort by the semantic score, highest first
-            final_results_with_score.sort(
-                key=lambda x: x['score'], reverse=True)
-
+            # Increment the access count for each
+            for res in top_5_results:
+                db.increment_access_count(res['path'])
             # --- END OF FIX ---
 
-            # Return the top 5 as a LIST
-            return jsonify(final_results_with_score[:5])
-
+            # "Find" mode returns a LIST
+            return jsonify(top_5_results)
         else:
-            # Pure Metadata Search
-            # (This part is fine)
             final_results_from_db = db.get_files_by_filter_only(sql_filter)
-            return jsonify(final_results_from_db[:5])
+            # Get the top 5 results
+            top_5_results = final_results_from_db[:5]
 
+            # Increment the access count for each
+            for res in top_5_results:
+                db.increment_access_count(res['path'])
+            # --- END OF FIX ---
+
+            # "Find" mode returns a LIST
+            return jsonify(top_5_results)
     except Exception as e:
         logging.error(f"Error during search: {e}\n{traceback.format_exc()}")
         return jsonify({"error": "Internal server error"}), 500
 
-def run_flask_app():
-    logging.info("Starting Flask server on http://127.0.0.1:5000")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+# --- 👇 NEW ENDPOINT 1 👇 ---
 
-# --- WATCHDOG FILE HANDLER (Unchanged) ---
+
+@app.route('/get_recent_files', methods=['GET'])
+def get_recent_files():
+    """Endpoint to get the 5 most recently modified files."""
+    global db
+    try:
+        files = db.get_recent_files(limit=5)
+        return jsonify(files)
+    except Exception as e:
+        logging.error(
+            f"Error in /get_recent_files: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": "Could not retrieve recent files"}), 500
+
+# --- 👇 NEW ENDPOINT 2 👇 ---
+
+
+@app.route('/get_popular_files', methods=['GET'])
+def get_popular_files():
+    """Endpoint to get the 5 most frequently accessed files."""
+    global db
+    try:
+        files = db.get_popular_files(limit=5)
+        return jsonify(files)
+    except Exception as e:
+        logging.error(
+            f"Error in /get_popular_files: {e}\n{traceback.format_exc()}")
+        return jsonify({"error": "Could not retrieve popular files"}), 500
+
+# --- WATCHDOG AND STARTUP CODE (Unchanged) ---
+# (Make sure this is the stable version from your 'gui-development' branch)
+
+
+def run_flask_app():
+    logging.info(
+        "Starting Flask server on [http://127.0.0.1:5000](http://127.0.0.1:5000)")
+    app.run(host="127.0.0.1", port=5000, debug=False)
 
 
 def file_metadata(path: str):
-    # (Unchanged)
     try:
         st = os.stat(path)
         return {'path': path, 'name': os.path.basename(path), 'size': st.st_size, 'created_at': datetime.fromtimestamp(st.st_ctime).isoformat(), 'modified_at': datetime.fromtimestamp(st.st_mtime).isoformat(), 'accessed_at': datetime.fromtimestamp(st.st_atime).isoformat(), 'extra_json': '{}'}
@@ -179,13 +199,14 @@ def file_metadata(path: str):
 
 
 class Handler(FileSystemEventHandler):
-    # (Unchanged)
     def __init__(self):
         self.excluded_dirs = ['.venv', 'site-packages',
                               '__pycache__', '.git', '.vscode', 'db', 'model']
+        # (This should be from your config.py)
         self.valid_extensions = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf')
 
     def _is_path_excluded(self, path):
+        # (This is your working exclusion logic)
         if not path or not isinstance(path, str):
             return True
         filename = os.path.basename(path)
@@ -212,7 +233,7 @@ class Handler(FileSystemEventHandler):
                 stored_mod_time_str = db.get_modified_time(path)
                 if stored_mod_time_str and current_meta['modified_at'] <= stored_mod_time_str:
                     return
-            MAX_FILE_SIZE = 100 * 1024 * 1024
+            MAX_FILE_SIZE = 100 * 1024 * 1024  # (This should be in config.py)
             if current_meta['size'] > MAX_FILE_SIZE:
                 logging.warning(f"Skipping large file: {path}")
                 return
@@ -247,45 +268,39 @@ class Handler(FileSystemEventHandler):
             logging.info(f'Deleted from index: {path}')
 
 
-# --- MAIN EXECUTION ---
 if __name__ == '__main__':
+    # --- This main block is from your stable 'gui-development' branch ---
     try:
         logging.info("--- MetaTrack Agent Server starting up... ---")
 
-        # --- 1. Configure the API key ---
         api_key = config.API_KEY
         if not api_key:
             logging.error("FATAL: GOOGLE_API_KEY not found in .env file")
             raise ValueError("GOOGLE_API_KEY not found in .env file")
         genai.configure(api_key=api_key)
 
-        # --- 2. Load all local components ---
         logging.info("Loading local components...")
         db = MetadataDB(config.DB_PATH)
         embedder = Embedder(backend=config.EMBEDDING_BACKEND)
         vstore = SimpleVectorStore(path=config.EMBEDDINGS_PATH)
         logging.info("All local components loaded.")
 
-        # --- 3. ✅ MODIFIED: Initialize the agent "brain" ---
         logging.info("Initializing agent brain (Gemini)...")
-        # We set the "system instruction" here, when we create the model
         agent_model = genai.GenerativeModel(
-            'gemini-2.5-flash',
+            'gemini-2.5-flash',  # Or your working model
             system_instruction=AGENT_SYSTEM_PROMPT
         )
         logging.info("Agent brain is online.")
 
-        # --- 4. Start the Flask Server in a new thread ---
         server_thread = threading.Thread(target=run_flask_app, daemon=True)
         server_thread.start()
 
-        # --- 5. Start the File Watcher (Initial Scan) ---
-        path = config.WATCH_PATH
+        path = config.WATCH_PATH  # (This should be your single directory)
         event_handler = Handler()
         logging.info(f"Performing initial scan of {path}...")
-        # (Initial scan logic is unchanged)
         if os.path.exists(path):
             for root, dirs, files in os.walk(path, topdown=True):
+                # (This is your working single-directory scan logic)
                 dirs[:] = [
                     d for d in dirs if d not in event_handler.excluded_dirs and not d.startswith('.')]
                 is_excluded_root = any(
@@ -305,13 +320,11 @@ if __name__ == '__main__':
             logging.error(f"Error: Watch path '{path}' does not exist.")
             exit()
 
-        # --- 6. Start the File Watcher (Monitoring) ---
         observer = Observer()
         observer.schedule(event_handler, path, recursive=True)
         observer.start()
         logging.info(f"Watcher started on {path}.")
 
-        # Keep main thread alive
         try:
             while True:
                 time.sleep(1)
