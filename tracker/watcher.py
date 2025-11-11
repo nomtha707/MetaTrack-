@@ -1,4 +1,4 @@
-# tracker/watcher.py (Upgraded with Home endpoints)
+# tracker/watcher.py (Stable Text-Only Server with Home Endpoints)
 import os
 import time
 import json
@@ -10,7 +10,7 @@ import tracker.config as config
 from tracker.metadata_db import MetadataDB
 from tracker.extractor import extract_text
 from tracker.embedder import Embedder
-from tracker.vectorstore import SimpleVectorStore  # Back to SimpleVectorStore
+from tracker.vectorstore import SimpleVectorStore  # <-- This is the correct import
 from flask import Flask, request, jsonify
 import logging
 import traceback
@@ -26,12 +26,12 @@ vstore = None
 agent_model = None
 # ------------------------
 
-# --- LOGGING SETUP (unchanged) ---
+# --- LOGGING SETUP ---
 log_path = os.path.join(config.BASE_DIR, 'watcher.log')
 logging.basicConfig(filename=log_path, level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- AGENT PROMPT (This is your working "Find-Only" prompt) ---
+# --- AGENT PROMPT (This is your final, working prompt) ---
 AGENT_SYSTEM_PROMPT = """
 You are a "Local File Search Agent". Your job is to analyze a user's natural language
 query and convert it into a JSON plan that a Python script can execute.
@@ -108,13 +108,16 @@ def search_endpoint():
         semantic_query = plan.get("semantic_query")
 
         if semantic_query:
-            query_vector = embedder.embed(semantic_query)
+            # Hybrid Search
+            query_vector = embedder.embed_text(
+                semantic_query)  # Use embed_text
             vector_results = vstore.query(query_vector, top_k=20)
             search_paths = [res['path'] for res in vector_results]
             if not search_paths:
                 return jsonify([])
             final_results_from_db = db.get_files_by_path_and_filter(
                 search_paths, sql_filter)
+
             path_to_score = {res['path']: res['score']
                              for res in vector_results}
             final_results_with_score = []
@@ -122,39 +125,27 @@ def search_endpoint():
                 row_with_score = dict(row)
                 row_with_score['score'] = path_to_score.get(row['path'], 0)
                 final_results_with_score.append(row_with_score)
-            final_results_with_score.sort(key=lambda x: x['score'], reverse=True)
-            # Get the top 5 results
+            final_results_with_score.sort(
+                key=lambda x: x['score'], reverse=True)
+
             top_5_results = final_results_with_score[:5]
-
-            # Increment the access count for each
             for res in top_5_results:
-                db.increment_access_count(res['path'])
-            # --- END OF FIX ---
-
-            # "Find" mode returns a LIST
+                db.increment_access_count(res['path'])  # Update access count
             return jsonify(top_5_results)
         else:
+            # Pure Metadata Search
             final_results_from_db = db.get_files_by_filter_only(sql_filter)
-            # Get the top 5 results
             top_5_results = final_results_from_db[:5]
-
-            # Increment the access count for each
             for res in top_5_results:
-                db.increment_access_count(res['path'])
-            # --- END OF FIX ---
-
-            # "Find" mode returns a LIST
+                db.increment_access_count(res['path'])  # Update access count
             return jsonify(top_5_results)
     except Exception as e:
         logging.error(f"Error during search: {e}\n{traceback.format_exc()}")
         return jsonify({"error": "Internal server error"}), 500
 
-# --- 👇 NEW ENDPOINT 1 👇 ---
-
 
 @app.route('/get_recent_files', methods=['GET'])
 def get_recent_files():
-    """Endpoint to get the 5 most recently modified files."""
     global db
     try:
         files = db.get_recent_files(limit=5)
@@ -164,12 +155,9 @@ def get_recent_files():
             f"Error in /get_recent_files: {e}\n{traceback.format_exc()}")
         return jsonify({"error": "Could not retrieve recent files"}), 500
 
-# --- 👇 NEW ENDPOINT 2 👇 ---
-
 
 @app.route('/get_popular_files', methods=['GET'])
 def get_popular_files():
-    """Endpoint to get the 5 most frequently accessed files."""
     global db
     try:
         files = db.get_popular_files(limit=5)
@@ -179,17 +167,16 @@ def get_popular_files():
             f"Error in /get_popular_files: {e}\n{traceback.format_exc()}")
         return jsonify({"error": "Could not retrieve popular files"}), 500
 
-# --- WATCHDOG AND STARTUP CODE (Unchanged) ---
-# (Make sure this is the stable version from your 'gui-development' branch)
-
 
 def run_flask_app():
     logging.info(
         "Starting Flask server on [http://127.0.0.1:5000](http://127.0.0.1:5000)")
     app.run(host="127.0.0.1", port=5000, debug=False)
 
+# --- WATCHDOG HANDLER (Now uses config for extensions) ---
 
-def file_metadata(path: str):
+
+def file_metadata(path: str):  # Moved to top level
     try:
         st = os.stat(path)
         return {'path': path, 'name': os.path.basename(path), 'size': st.st_size, 'created_at': datetime.fromtimestamp(st.st_ctime).isoformat(), 'modified_at': datetime.fromtimestamp(st.st_mtime).isoformat(), 'accessed_at': datetime.fromtimestamp(st.st_atime).isoformat(), 'extra_json': '{}'}
@@ -198,23 +185,29 @@ def file_metadata(path: str):
         return None
 
 
+# --- WATCHDOG HANDLER (Now uses config for extensions) ---
 class Handler(FileSystemEventHandler):
     def __init__(self):
-        self.excluded_dirs = ['.venv', 'site-packages',
-                              '__pycache__', '.git', '.vscode', 'db', 'model']
-        # (This should be from your config.py)
-        self.valid_extensions = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf')
+        # Pull from the config file
+        self.excluded_dirs = config.EXCLUDED_DIRS
+        self.valid_extensions = config.VALID_EXTENSIONS
 
     def _is_path_excluded(self, path):
-        # (This is your working exclusion logic)
         if not path or not isinstance(path, str):
             return True
         filename = os.path.basename(path)
         if filename.startswith('~$') or filename.startswith('.'):
             return True
-        normalized_path = f"/{path.replace('\\', '/')}/"
-        if any(f"/{excluded_dir}/" in normalized_path for excluded_dir in self.excluded_dirs):
-            return True
+
+        # Use a standard path format ('/') to check
+        path_lower = path.lower().replace('\\', '/')
+
+        # Check if any part of the path contains a forbidden directory name
+        # e.g., 'c:/users/me/.venv/lib/...'
+        for excluded_dir in self.excluded_dirs:
+            if f'/{excluded_dir.lower()}/' in path_lower:
+                return True
+
         if not path.lower().endswith(self.valid_extensions):
             return True
         return False
@@ -222,8 +215,10 @@ class Handler(FileSystemEventHandler):
     def process_file(self, path, check_modified_time=False):
         global db, embedder, vstore
         try:
+            # This check is now robust
             if self._is_path_excluded(path):
                 return
+
             if not os.path.exists(path):
                 return
             current_meta = file_metadata(path)
@@ -233,16 +228,17 @@ class Handler(FileSystemEventHandler):
                 stored_mod_time_str = db.get_modified_time(path)
                 if stored_mod_time_str and current_meta['modified_at'] <= stored_mod_time_str:
                     return
-            MAX_FILE_SIZE = 100 * 1024 * 1024  # (This should be in config.py)
+            MAX_FILE_SIZE = 100 * 1024 * 1024
             if current_meta['size'] > MAX_FILE_SIZE:
                 logging.warning(f"Skipping large file: {path}")
                 return
-            logging.info(f"Processing: {path}")
+
+            logging.info(f"Processing (text): {path}")
             text = extract_text(path)
-            emb = embedder.embed(text)
+            emb = embedder.embed_text(text)
             db.upsert(current_meta)
             vstore.upsert(path, emb)
-            logging.info(f"Indexed: {path}")
+            logging.info(f"Indexed (text): {path}")
         except Exception as e:
             logging.error(
                 f"Error processing {path}: {e}\n{traceback.format_exc()}")
@@ -262,6 +258,7 @@ class Handler(FileSystemEventHandler):
         if event.is_directory:
             return
         path = event.src_path
+        # We must check the path again, as it might be from an excluded dir
         if not self._is_path_excluded(path):
             db.mark_deleted(path)
             vstore.delete(path)
@@ -269,20 +266,19 @@ class Handler(FileSystemEventHandler):
 
 
 if __name__ == '__main__':
-    # --- This main block is from your stable 'gui-development' branch ---
     try:
         logging.info("--- MetaTrack Agent Server starting up... ---")
 
         api_key = config.API_KEY
         if not api_key:
-            logging.error("FATAL: GOOGLE_API_KEY not found in .env file")
             raise ValueError("GOOGLE_API_KEY not found in .env file")
         genai.configure(api_key=api_key)
 
         logging.info("Loading local components...")
         db = MetadataDB(config.DB_PATH)
-        embedder = Embedder(backend=config.EMBEDDING_BACKEND)
-        vstore = SimpleVectorStore(path=config.EMBEDDINGS_PATH)
+        embedder = Embedder()  # Text-only embedder
+        vstore = SimpleVectorStore(
+            path=config.EMBEDDINGS_PATH)  # Numpy vector store
         logging.info("All local components loaded.")
 
         logging.info("Initializing agent brain (Gemini)...")
@@ -295,27 +291,29 @@ if __name__ == '__main__':
         server_thread = threading.Thread(target=run_flask_app, daemon=True)
         server_thread.start()
 
-        path = config.WATCH_PATH  # (This should be your single directory)
+        path = config.WATCH_PATH  # Your single, stable path
         event_handler = Handler()
         logging.info(f"Performing initial scan of {path}...")
         if os.path.exists(path):
             for root, dirs, files in os.walk(path, topdown=True):
-                # (This is your working single-directory scan logic)
-                dirs[:] = [
-                    d for d in dirs if d not in event_handler.excluded_dirs and not d.startswith('.')]
-                is_excluded_root = any(
-                    f"/{excluded_dir}/" in f"/{root.replace('\\', '/')}/" for excluded_dir in event_handler.excluded_dirs)
-                if is_excluded_root:
-                    continue
+
+                # --- THIS IS THE CORRECTED SCAN LOGIC ---
+                # Prune excluded directories so we don't even walk them
+                dirs[:] = [d for d in dirs if d.lower(
+                ) not in config.EXCLUDED_DIRS and not d.startswith('.')]
+
                 for filename in files:
+                    file_path = os.path.join(root, filename)
+                    # We can just call process_file, since its own
+                    # _is_path_excluded() check is now very reliable.
                     try:
-                        file_path = os.path.join(root, filename)
                         event_handler.process_file(
                             file_path, check_modified_time=True)
                     except Exception as e:
                         logging.error(
                             f"Error during initial scan of {filename}: {e}\n{traceback.format_exc()}")
             logging.info("Initial scan complete.")
+            # --- END OF CORRECTED LOGIC ---
         else:
             logging.error(f"Error: Watch path '{path}' does not exist.")
             exit()

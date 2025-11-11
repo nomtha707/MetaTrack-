@@ -1,4 +1,4 @@
-# tracker/metadata_db.py (Upgraded with Home functions)
+# tracker/metadata_db.py (Full Thread-Safe Version)
 import sqlite3
 import os
 import tracker.config as config
@@ -12,10 +12,8 @@ class MetadataDB:
         self._create_table()
 
     def _create_connection(self):
-        """Creates a new database connection."""
         try:
             conn = sqlite3.connect(self.db_path)
-            # This line allows results to be returned as dictionaries
             conn.row_factory = sqlite3.Row
             return conn
         except sqlite3.Error as e:
@@ -101,7 +99,7 @@ class MetadataDB:
             c.execute(sql, (path,))
             result = c.fetchone()
             if result:
-                return result["modified_at"]  # Now returns by column name
+                return result["modified_at"]
             return None
         except sqlite3.Error as e:
             logging.error(f"Error getting modified time for {path}: {e}")
@@ -168,9 +166,7 @@ class MetadataDB:
             if conn:
                 conn.close()
 
-    # --- 👇 NEW FUNCTION 1 👇 ---
     def get_recent_files(self, limit=5):
-        """Gets the most recently modified files."""
         sql = ''' SELECT * FROM files 
                   WHERE is_deleted = 0 
                   ORDER BY modified_at DESC 
@@ -191,9 +187,7 @@ class MetadataDB:
             if conn:
                 conn.close()
 
-    # --- 👇 NEW FUNCTION 2 👇 ---
     def get_popular_files(self, limit=5):
-        """Gets the most frequently accessed files."""
         sql = ''' SELECT * FROM files 
                   WHERE is_deleted = 0 AND access_count > 0
                   ORDER BY access_count DESC, modified_at DESC
@@ -213,15 +207,14 @@ class MetadataDB:
         finally:
             if conn:
                 conn.close()
-    
+
     def increment_access_count(self, path: str):
-        """Increments the access_count for a file. Thread-safe."""
         sql = ''' UPDATE files 
                   SET access_count = access_count + 1 
                   WHERE path = ? AND is_deleted = 0 '''
         conn = None
         try:
-            conn = self._create_connection()  # Get new connection
+            conn = self._create_connection()
             if not conn:
                 return
             c = conn.cursor()
