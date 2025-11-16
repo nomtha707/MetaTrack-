@@ -1,4 +1,4 @@
-# tracker/embedder.py (Text-Only Version)
+# tracker/embedder.py (Final Version with PyInstaller fix)
 import os
 import numpy as np
 import sys
@@ -9,17 +9,25 @@ from sentence_transformers import SentenceTransformer
 # Suppress obnoxious image warnings
 logging.getLogger("PIL").setLevel(logging.WARNING)
 
-# --- FUNCTION TO GET MODEL PATH (Unchanged) ---
+# --- THIS FUNCTION IS CRITICAL FOR THE .EXE ---
 
 
 def get_model_path():
-    """Finds the path to the bundled 'all-MiniLM-L6-v2' model."""
+    """
+    Find the path to the 'all-MiniLM-L6-v2' model.
+    If running as a PyInstaller bundle, it will be in a bundled 'model' dir.
+    """
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Running as a bundled .exe
         bundle_dir = os.path.dirname(sys.executable)
         model_dir = os.path.join(bundle_dir, 'model', 'all-MiniLM-L6-v2')
         if os.path.isdir(model_dir):
             return model_dir
+
+    # Running as a .py script OR bundled model not found.
+    # Let sentence-transformers handle it (download or use cache)
     return 'all-MiniLM-L6-v2'
+# --- END OF FUNCTION ---
 
 
 class Embedder:
@@ -29,7 +37,9 @@ class Embedder:
 
         # --- Load Text Model ---
         try:
+            # This now uses our smart function
             model_name_or_path = get_model_path()
+
             logging.info(f"Loading text model from: {model_name_or_path}")
             self.text_model = SentenceTransformer(model_name_or_path)
             self.text_dim = self.text_model.get_sentence_embedding_dimension()
