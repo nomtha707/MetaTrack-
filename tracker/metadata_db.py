@@ -3,6 +3,7 @@ import sqlite3
 import os
 import tracker.config as config
 import logging
+import re
 
 
 class MetadataDB:
@@ -132,32 +133,52 @@ class MetadataDB:
             if conn:
                 conn.close()
 
+
     def get_files_by_filter_only(self, sql_filter: str = "1=1"):
+        """
+            Gets all file details using only a SQL filter.
+            """
+
         sql = ""
         sql_filter_upper = sql_filter.strip().upper()
+
         where_clause = "1=1"
-        order_by_clause = ""
+        order_by_clause = ""  # Default to no sorting
+
+        # Check if an ORDER BY clause exists and split it
         if "ORDER BY" in sql_filter_upper:
-            order_by_index = sql_filter_upper.find("ORDER BY")
-            where_clause = sql_filter[:order_by_index].strip()
-            order_by_clause = sql_filter[order_by_index:].strip()
-            if not where_clause:
-                where_clause = "1=1"
+                order_by_index = sql_filter_upper.find("ORDER BY")
+                where_clause = sql_filter[:order_by_index].strip()
+                order_by_clause = sql_filter[order_by_index:].strip()
+                if not where_clause:
+                    where_clause = "1=1"
         else:
             where_clause = sql_filter
-        sql = f''' SELECT * FROM files 
-                   WHERE ({where_clause}) 
-                   AND is_deleted = 0 
-                   {order_by_clause} '''
+
+            # --- THIS IS THE FIX ---
+            # If the agent didn't provide an ORDER BY, add our own default.
+        if not order_by_clause:
+            order_by_clause = "ORDER BY modified_at DESC"
+            # --- END OF FIX ---
+
+            # Construct the final, valid query
+        sql = f''' SELECT * FROM files
+                WHERE ({where_clause})
+                AND is_deleted = 0
+                {order_by_clause} '''
+
         conn = None
         try:
             conn = self._create_connection()
             if not conn:
                 return []
+
             c = conn.cursor()
             c.execute(sql)
             results = c.fetchall()
+
             return [dict(row) for row in results]
+
         except sqlite3.Error as e:
             logging.error(
                 f"Error executing agent's pure SQL query: {e}\nSQL: {sql}")
@@ -222,6 +243,42 @@ class MetadataDB:
             conn.commit()
         except sqlite3.Error as e:
             logging.error(f"Error incrementing access count for {path}: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+    def get_files_by_keyword(self, keyword_query: str, limit=5):
+        """
+        Performs a 'dumb' keyword search on the file name.
+        """
+        # Get individual words, ignore small "stop words"
+        words = [word for word in re.findall(
+            r'\w+', keyword_query.lower()) if len(word) > 3]
+        if not words:
+            return []
+
+        # Create a "WHERE name LIKE '%word1%' OR name LIKE '%word2%'"
+        like_clauses = " OR ".join([f"name LIKE ?" for word in words])
+        sql = f''' SELECT * FROM files 
+                   WHERE ({like_clauses}) AND is_deleted = 0
+                   ORDER BY modified_at DESC
+                   LIMIT ? '''
+
+        # Create the list of parameters (e.g., ['%prolog%', '%file%'])
+        params = [f"%{word}%" for word in words] + [limit]
+
+        conn = None
+        try:
+            conn = self._create_connection()
+            if not conn:
+                return []
+            c = conn.cursor()
+            c.execute(sql, params)
+            results = c.fetchall()
+            return [dict(row) for row in results]
+        except sqlite3.Error as e:
+            logging.error(f"Error getting files by keyword: {e}")
+            return []
         finally:
             if conn:
                 conn.close()

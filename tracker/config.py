@@ -1,4 +1,4 @@
-# tracker/config.py (Stable Text-Only Version)
+# tracker/config.py (Upgraded for Settings)
 import os
 import sys
 from dotenv import load_dotenv
@@ -19,10 +19,6 @@ BASE_DIR = get_base_dir()
 dotenv_path = os.path.join(BASE_DIR, '.env')
 load_dotenv(dotenv_path)
 
-# --- Watch Path (Your single, stable folder) ---
-# Or your single folder
-WATCH_PATH = r"D:/College_IIITDWD"
-
 # --- Valid file types ---
 VALID_EXTENSIONS = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf')
 
@@ -37,6 +33,10 @@ DB_DIR = os.path.join(BASE_DIR, 'db')
 DB_PATH = os.path.join(DB_DIR, "metadata.db")
 EMBEDDINGS_PATH = os.path.join(
     DB_DIR, "embeddings")  # Base name for .npy/.json
+
+# --- NEW: Settings File Path ---
+# This is where the GUI will save the user's folder list
+SETTINGS_PATH = os.path.join(DB_DIR, "settings.json")
 
 # --- API Key (Unchanged) ---
 API_KEY = os.environ.get("GOOGLE_API_KEY")
