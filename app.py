@@ -1,4 +1,4 @@
-# app.py (Final GUI with "Top-Result-Only" and no snippets)
+# app.py (New, Fixed Version)
 import customtkinter as ctk
 from tkinter import filedialog
 import requests
@@ -13,10 +13,23 @@ SEARCH_URL = f"{SERVER_BASE_URL}/search"
 RECENT_URL = f"{SERVER_BASE_URL}/get_recent_files"
 POPULAR_URL = f"{SERVER_BASE_URL}/get_popular_files"
 
-# --- CONFIG PATH ---
-SETTINGS_PATH = os.path.join(os.path.dirname(
-    os.path.abspath(__file__)), 'db', 'settings.json')
+# --- ✅ THIS IS THE FIX ---
 
+
+def get_base_dir():
+    """Get the base directory for the application (script or .exe)"""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # Running as a PyInstaller bundle (.exe)
+        # We are in the 'dist' folder
+        return os.path.dirname(sys.executable)
+    else:
+        # Running as a normal script (.py)
+        # We are in the project root
+        return os.path.abspath(".")
+    
+
+BASE_DIR = get_base_dir()
+SETTINGS_PATH = os.path.join(BASE_DIR, 'db', 'settings.json')
 # --- CLICK HANDLER FUNCTIONS ---
 
 

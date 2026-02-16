@@ -385,6 +385,13 @@ class Handler(FileSystemEventHandler):
             vstore.delete(path)
             logging.info(f'Deleted from index: {path}')
 
+# --- ERROR HANDLER FOR OS.WALK ---
+def walk_error_handler(exception):
+    """
+    Handles permission errors during os.walk() to prevent the scanner from crashing
+    when it hits a locked folder (like C:/Windows/System32 or restricted User dirs).
+    """
+    logging.warning(f"Scanner skipped a folder due to permission error: {exception}")
 
 if __name__ == '__main__':
     try:
@@ -433,13 +440,19 @@ if __name__ == '__main__':
 
         # 2. Start initial scan for all configured paths
         event_handler = Handler()
+        
+        # Pre-process excluded dirs for case-insensitive matching
+        excluded_dirs_lower = [d.lower() for d in config.EXCLUDED_DIRS]
+
         for path in watch_paths:
             logging.info(f"Performing initial scan of {path}...")
             if os.path.exists(path):
-                for root, dirs, files in os.walk(path, topdown=True):
+                # ADDED 'onerror=walk_error_handler' to handle PermissionDenied errors gracefully
+                for root, dirs, files in os.walk(path, topdown=True, onerror=walk_error_handler):
 
-                    dirs[:] = [d for d in dirs if d.lower(
-                    ) not in config.EXCLUDED_DIRS and not d.startswith('.')]
+                    # Modify 'dirs' in-place to skip excluded directories immediately
+                    # Improved to be CASE-INSENSITIVE (e.g. 'Windows' matches 'windows')
+                    dirs[:] = [d for d in dirs if d.lower() not in excluded_dirs_lower and not d.startswith('.')]
 
                     for filename in files:
                         file_path = os.path.join(root, filename)

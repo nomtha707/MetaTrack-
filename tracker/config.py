@@ -25,7 +25,9 @@ VALID_EXTENSIONS = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf')
 # --- Excluded directories ---
 EXCLUDED_DIRS = [
     '$RECYCLE.BIN', '__pycache__', 'node_modules', '.git', '.vscode',
-    '.idea', 'db', 'dist', 'model', '.venv', 'venv', 'env'
+    '.idea', 'db', 'dist', 'model', '.venv', 'venv', 'env',
+    'Windows', 'Program Files', 'Program Files (x86)', 'ProgramData',
+    'hp', 'HPQWare', 'Dell', 'Intel', 'NVIDIA'
 ]
 
 # --- Database & Model Paths ---
