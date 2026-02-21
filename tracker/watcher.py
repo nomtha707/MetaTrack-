@@ -15,6 +15,7 @@ from tracker.vectorstore import SimpleVectorStore
 from flask import Flask, request, jsonify
 import logging
 import traceback
+import ctypes
 
 # --- AGENT IMPORTS ---
 import google.generativeai as genai
@@ -191,10 +192,8 @@ def search_endpoint():
         sql_filter = plan.get("sql_filter", "1=1")
         semantic_query = plan.get("semantic_query")
 
-        # --- THIS IS THE FIX ---
-        # For snippets and keyword search, we will *always* use the user's raw query.
-        snippet_query = query_text
-        # --- END OF FIX ---
+        # Use the Agent's extracted core topic to avoid matching conversational filler like "file"
+        snippet_query = semantic_query if semantic_query else query_text
 
         # --- 2. "ACT": Execute the "Find" plan ---
         logging.info("Executing 'FIND' (Hybrid Search) logic...")
@@ -317,6 +316,33 @@ def file_metadata(path: str):
         logging.error(f'Error getting metadata for {path}: {e}')
         return None
 
+# --- HELPER: DETECT CLOUD FILES ---
+def is_cloud_file(filepath):
+    """
+    Checks if a file is a placeholder/cloud file (OneDrive/Dropbox/GDrive)
+    to avoid triggering an automatic download.
+    """
+    try:
+        # Get file attributes using Windows API
+        attrs = ctypes.windll.kernel32.GetFileAttributesW(filepath)
+        if attrs == -1:
+            return False
+
+        # CONSTANTS for Windows File Attributes
+        FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+        FILE_ATTRIBUTE_OFFLINE = 0x1000
+        FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000  # Windows 10/11 Cloud files
+
+        # Check if any "Cloud" bit is set
+        if (attrs & FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS) or \
+           (attrs & FILE_ATTRIBUTE_OFFLINE):
+            return True
+            
+        return False
+    except Exception as e:
+        logging.error(f"Error checking cloud attributes for {filepath}: {e}")
+        return False
+    
 
 class Handler(FileSystemEventHandler):
     def __init__(self):
@@ -344,6 +370,11 @@ class Handler(FileSystemEventHandler):
                 return
             if not os.path.exists(path):
                 return
+            
+            if is_cloud_file(path):
+                logging.info(f"Skipping content extraction for Cloud File: {path}")
+                return 
+            
             current_meta = file_metadata(path)
             if not current_meta:
                 return

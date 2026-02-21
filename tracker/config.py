@@ -27,7 +27,8 @@ EXCLUDED_DIRS = [
     '$RECYCLE.BIN', '__pycache__', 'node_modules', '.git', '.vscode',
     '.idea', 'db', 'dist', 'model', '.venv', 'venv', 'env',
     'Windows', 'Program Files', 'Program Files (x86)', 'ProgramData',
-    'hp', 'HPQWare', 'Dell', 'Intel', 'NVIDIA'
+    'hp', 'HPQWare', 'Dell', 'Intel', 'NVIDIA', 'msys64',
+    'AppData', 'Application Data', 'Cache', 'CacheStorage', 'Temp'
 ]
 
 # --- Database & Model Paths ---
