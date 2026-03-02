@@ -2,7 +2,6 @@ watchdog
 sentence-transformers
 numpy
 python-docx
-PyPDF2
 Flask
 requests
 google-generativeai
@@ -10,3 +9,4 @@ python-dotenv
 customtkinter
 Pillow
 scikit-learn
+pymupdf
