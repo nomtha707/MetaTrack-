@@ -192,8 +192,9 @@ def search_endpoint():
         sql_filter = plan.get("sql_filter", "1=1")
         semantic_query = plan.get("semantic_query")
 
-        # Use the Agent's extracted core topic to avoid matching conversational filler like "file"
-        snippet_query = semantic_query if semantic_query else query_text
+        # Only trigger a keyword search if the AI found a core topic.
+        # This stops words like "files" or "opened" from ruining date searches.
+        keyword_search_term = semantic_query
 
         # --- 2. "ACT": Execute the "Find" plan ---
         logging.info("Executing 'FIND' (Hybrid Search) logic...")
@@ -224,13 +225,14 @@ def search_endpoint():
 
         # --- HYBRID SEARCH - PART 2: KEYWORD (LITERAL) ---
         # We now search keywords using the *original user query*
-        keyword_results = db.get_files_by_keyword(snippet_query, limit=5)
-        for res in keyword_results:
-            res_dict = dict(res)
-            existing_score = final_results_map.get(
-                res['path'], {}).get('score', 0)
-            res_dict['score'] = existing_score + 1.0  # Add 1.0 (massive bonus)
-            final_results_map[res['path']] = res_dict
+        if keyword_search_term:
+            keyword_results = db.get_files_by_keyword(keyword_search_term, limit=5)
+            for res in keyword_results:
+                res_dict = dict(res)
+                existing_score = final_results_map.get(
+                    res['path'], {}).get('score', 0)
+                res_dict['score'] = existing_score + 1.0  # Add 1.0 (massive bonus)
+                final_results_map[res['path']] = res_dict
 
         final_sorted_list = sorted(final_results_map.values(
         ), key=lambda x: x.get('score', 0), reverse=True)
@@ -242,7 +244,7 @@ def search_endpoint():
             try:
                 full_text = extract_text(res_dict['path'])
                 res_dict['snippet'] = _generate_snippet(
-                    full_text, snippet_query)
+                    full_text, query_text)
                 db.increment_access_count(res_dict['path'])
                 augmented_results.append(res_dict)
             except Exception as e:
