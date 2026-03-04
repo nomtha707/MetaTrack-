@@ -20,7 +20,7 @@ dotenv_path = os.path.join(BASE_DIR, '.env')
 load_dotenv(dotenv_path)
 
 # --- Valid file types ---
-VALID_EXTENSIONS = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf')
+VALID_EXTENSIONS = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf', '.jpg', '.jpeg', '.png')
 
 # --- Excluded directories ---
 EXCLUDED_DIRS = [

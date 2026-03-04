@@ -1,64 +1,71 @@
-# tracker/embedder.py (Final Version with PyInstaller fix)
+# tracker/embedder.py
 import os
 import numpy as np
 import sys
 import traceback
 import logging
 from sentence_transformers import SentenceTransformer
+from PIL import Image  # Required for loading images
 
-# Suppress obnoxious image warnings
 logging.getLogger("PIL").setLevel(logging.WARNING)
 
-# --- THIS FUNCTION IS CRITICAL FOR THE .EXE ---
-
-
-def get_model_path():
-    """
-    Find the path to the 'all-MiniLM-L6-v2' model.
-    If running as a PyInstaller bundle, it will be in a bundled 'model' dir.
-    """
+def get_model_path(folder_name):
+    """Dynamically finds the model folder, even when bundled as an .exe"""
     if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        # Running as a bundled .exe
         bundle_dir = os.path.dirname(sys.executable)
-        model_dir = os.path.join(bundle_dir, 'model', 'all-MiniLM-L6-v2')
+        model_dir = os.path.join(bundle_dir, 'model', folder_name)
         if os.path.isdir(model_dir):
             return model_dir
-
-    # Running as a .py script OR bundled model not found.
-    # Let sentence-transformers handle it (download or use cache)
-    return 'all-MiniLM-L6-v2'
-# --- END OF FUNCTION ---
-
+    return folder_name
 
 class Embedder:
-    def __init__(self, backend='sentence-transformers'):
+    def __init__(self):
         self.text_model = None
-        self.text_dim = 384  # Default
+        self.image_model = None
+        self.text_dim = 384
+        self.image_dim = 512  # CLIP's dimension size
 
-        # --- Load Text Model ---
+        # --- 1. Load Text Model ---
         try:
-            # This now uses our smart function
-            model_name_or_path = get_model_path()
-
-            logging.info(f"Loading text model from: {model_name_or_path}")
-            self.text_model = SentenceTransformer(model_name_or_path)
-            self.text_dim = self.text_model.get_sentence_embedding_dimension()
+            text_path = get_model_path('all-MiniLM-L6-v2')
+            logging.info(f"Loading TEXT model from: {text_path}")
+            self.text_model = SentenceTransformer(text_path)
         except Exception as e:
-            logging.error(
-                f"Failed to load SentenceTransformer: {e}\n{traceback.format_exc()}")
+            logging.error(f"Failed to load Text Model: {e}")
+
+        # --- 2. Load Image Model (CLIP) ---
+        try:
+            image_path = get_model_path('clip-ViT-B-32')
+            logging.info(f"Loading IMAGE model from: {image_path}")
+            self.image_model = SentenceTransformer(image_path)
+        except Exception as e:
+            logging.error(f"Failed to load Image Model: {e}")
 
     def embed_text(self, text: str) -> np.ndarray:
-        """Embeds a string of text. Returns a text vector."""
+        """Standard text embedding for documents."""
         if not text or not self.text_model:
             return np.zeros(self.text_dim, dtype=float)
+        emb = self.text_model.encode(text, show_progress_bar=False)
+        return np.array(emb, dtype=float)
+
+    def embed_image(self, image_path: str) -> np.ndarray:
+        """Reads a .jpg/.png and converts the pixels into semantic math."""
+        if not os.path.exists(image_path) or not self.image_model:
+            return np.zeros(self.image_dim, dtype=float)
         try:
-            emb = self.text_model.encode(text, show_progress_bar=False)
+            img = Image.open(image_path)
+            emb = self.image_model.encode(img, show_progress_bar=False)
             return np.array(emb, dtype=float)
         except Exception as e:
-            logging.error(f"Error embedding text: {e}")
-            return np.zeros(self.text_dim, dtype=float)
+            logging.error(f"Error embedding image {image_path}: {e}")
+            return np.zeros(self.image_dim, dtype=float)
 
-    # This is the only embed function we need for the agent
-    def embed_query_for_text_search(self, query: str) -> np.ndarray:
-        """Embeds a text query to search for TEXT."""
-        return self.embed_text(query)  # Use the text model
+    def embed_query_for_image_search(self, text_query: str) -> np.ndarray:
+        """
+        MAGIC TRICK: To search for an image using text, we pass the text 
+        into the IMAGE model. CLIP bridges the gap between words and pixels.
+        """
+        if not text_query or not self.image_model:
+            return np.zeros(self.image_dim, dtype=float)
+        emb = self.image_model.encode(text_query, show_progress_bar=False)
+        return np.array(emb, dtype=float)
