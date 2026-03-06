@@ -1,4 +1,6 @@
 # tracker/watcher.py (Multimodal Two-Tower Server)
+import pystray
+from PIL import Image, ImageDraw
 import webview
 from flask import render_template
 import os
@@ -324,7 +326,7 @@ if __name__ == '__main__':
 
         agent_model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=AGENT_SYSTEM_PROMPT)
 
-        # --- NEW: RUN THE TRACKER IN A BACKGROUND THREAD ---
+        # --- 1. RUN TRACKER IN BACKGROUND ---
         def run_tracker():
             watch_paths = []
             if os.path.exists(config.SETTINGS_PATH):
@@ -356,13 +358,50 @@ if __name__ == '__main__':
                 if observer.is_alive(): observer.stop()
             if observer.is_alive(): observer.join()
 
-        # Start the tracker thread (daemon=True means it safely dies when you close the app window!)
         tracker_thread = threading.Thread(target=run_tracker, daemon=True)
         tracker_thread.start()
 
-        # --- NEW: START THE NATIVE DESKTOP WINDOW ---
-        # pywebview automatically hosts the Flask app for us!
+        # --- 2. SETUP THE NATIVE WINDOW ---
         window = webview.create_window('MetaTrack Search Agent', app, width=1000, height=700)
+
+        # Intercept the 'X' button! Hide the window instead of killing the app.
+        def on_closing():
+            window.hide()
+            return False 
+            
+        window.events.closing += on_closing
+
+        # --- 3. SYSTEM TRAY (THE MASTER CONTROLLER) ---
+        def setup_tray():
+            # Draw a temporary Dark Academia / Purple icon for the taskbar
+            image = Image.new('RGB', (64, 64), color='#0A091A')
+            draw = ImageDraw.Draw(image)
+            draw.rectangle([16, 16, 48, 48], fill='#9D74E5')
+
+            def on_open(icon, item):
+                window.show()
+
+            def on_quit(icon, item):
+                # Safely destroy everything and kill the ghost processes
+                icon.stop()
+                window.destroy()
+                os._exit(0) 
+
+            # Create the Right-Click Menu
+            menu = pystray.Menu(
+                pystray.MenuItem('Open Dashboard', on_open, default=True),
+                pystray.MenuItem('Quit MetaTrack', on_quit)
+            )
+            
+            # Start the taskbar icon
+            icon = pystray.Icon("MetaTrack", image, "MetaTrack Search Agent", menu)
+            icon.run()
+
+        # Run the Tray icon in a background thread
+        tray_thread = threading.Thread(target=setup_tray, daemon=True)
+        tray_thread.start()
+
+        # --- 4. START THE APP (Must be on main thread) ---
         webview.start()
 
     except Exception as e:
