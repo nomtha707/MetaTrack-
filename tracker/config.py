@@ -1,8 +1,6 @@
-# tracker/config.py (Upgraded for Settings)
+# tracker/config.py (Upgraded for Security & Settings)
 import os
 import sys
-from dotenv import load_dotenv
-
 
 def get_base_dir():
     """Get the base directory for the application (script or .exe)"""
@@ -11,13 +9,8 @@ def get_base_dir():
     else:
         return os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-
 # 1. Get the single, reliable base directory
 BASE_DIR = get_base_dir()
-
-# 2. Load the .env file from the BASE_DIR
-dotenv_path = os.path.join(BASE_DIR, '.env')
-load_dotenv(dotenv_path)
 
 # --- Valid file types ---
 VALID_EXTENSIONS = ('.txt', '.md', '.py', '.csv', '.docx', '.pdf', '.jpg', '.jpeg', '.png')
@@ -34,12 +27,10 @@ EXCLUDED_DIRS = [
 # --- Database & Model Paths ---
 DB_DIR = os.path.join(BASE_DIR, 'db')
 DB_PATH = os.path.join(DB_DIR, "metadata.db")
-EMBEDDINGS_PATH = os.path.join(
-    DB_DIR, "embeddings")  # Base name for .npy/.json
+EMBEDDINGS_PATH = os.path.join(DB_DIR, "embeddings")  # Base name for .npy/.json
 
-# --- NEW: Settings File Path ---
+# --- Settings File Path ---
 # This is where the GUI will save the user's folder list
 SETTINGS_PATH = os.path.join(DB_DIR, "settings.json")
 
-# --- API Key (Unchanged) ---
-API_KEY = os.environ.get("GOOGLE_API_KEY")
+# Note: API_KEY is now handled dynamically by the UI via api_key.txt

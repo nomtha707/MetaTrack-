@@ -441,6 +441,24 @@
 
         <main class="main-content">
             
+            <div id="setup-state" class="state-container hidden">
+                <div class="center-content">
+                    <h1 class="welcome-text">Secure the Engine</h1>
+                    <p style="color: var(--text-muted); font-size: 1.2rem; margin-bottom: 1rem;">Please enter your Gemini API Key to initialize the AI Agent.</p>
+                    
+                    <div style="background-color: #181630; border: 1px solid #1E1C3A; padding: 1rem 1.5rem; border-radius: 8px; margin-bottom: 3rem; text-align: center;">
+                        <span style="color: #C1BFCF; font-size: 0.95rem;">Don't have a key? Get one for free at:</span><br>
+                        <strong style="color: var(--accent-purple); font-size: 1.1rem; letter-spacing: 0.5px; user-select: all;">aistudio.google.com/app/apikey</strong>
+                    </div>
+                    
+                    <div class="search-bar-container large" style="display: flex; gap: 1rem;">
+                        <span class="search-icon">🔑</span>
+                        <input type="password" id="apiKeyInput" class="main-search-input" placeholder="AIzaSy..." style="flex: 1;">
+                        <button onclick="saveApiKey()" style="padding: 0 2rem; background-color: var(--accent-active); color: white; border: none; border-radius: 35px; font-size: 1.1rem; cursor: pointer; font-weight: bold; font-family: var(--font-main);">Start Engine</button>
+                    </div>
+                </div>
+            </div>
+
             <div id="welcome-state" class="state-container visible">
                 <div class="center-content">
                     <h1 class="welcome-text">Hello!<br>What are you looking for?</h1>
@@ -482,7 +500,23 @@
     <script id="app-scripts">
         // --- 1. MEMORY & INITIALIZATION ---
         let chatHistory = [];
-        window.onload = () => document.getElementById('welcomeInput').focus();
+        window.onload = async () => {
+            // Check if the engine has a key before showing the search bar
+            try {
+                const res = await fetch('/check_setup');
+                const data = await res.json();
+                
+                if (data.status === 'needs_key') {
+                    showState('setup');
+                    document.getElementById('apiKeyInput').focus();
+                } else {
+                    showState('welcome');
+                }
+            } catch (e) {
+                console.error("Setup check failed", e);
+                showState('welcome');
+            }
+        };
 
         // --- 2. NAVIGATION & EXPLORE VIEWS ---
         
@@ -557,6 +591,7 @@
         // Updated State Manager
         function showState(stateName) {
             const states = {
+                'setup': document.getElementById('setup-state'),
                 'welcome': document.getElementById('welcome-state'),
                 'chat': document.getElementById('chat-state'),
                 'explore': document.getElementById('explore-state')
@@ -729,6 +764,28 @@
         function scrollToBottom() {
             const chatWindow = document.getElementById('chatWindow');
             chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+
+        async function saveApiKey() {
+            const key = document.getElementById('apiKeyInput').value;
+            if (!key.trim()) return;
+
+            try {
+                const res = await fetch('/save_key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: key })
+                });
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    showState('welcome'); // Unlock the app!
+                } else {
+                    alert("Failed to save API Key.");
+                }
+            } catch (error) {
+                console.error("Error saving key:", error);
+            }
         }
     </script>
 </body>

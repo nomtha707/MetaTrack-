@@ -271,6 +271,32 @@ def open_folder_endpoint():
             
     return jsonify({"error": "Path not found on disk"}), 404
 
+@app.route('/check_setup', methods=['GET'])
+def check_setup():
+    # Check if the user has saved a key locally
+    key_path = 'api_key.txt'
+    if os.path.exists(key_path):
+        with open(key_path, 'r') as f:
+            if len(f.read().strip()) > 10:
+                return jsonify({"status": "ready"})
+    return jsonify({"status": "needs_key"})
+
+@app.route('/save_key', methods=['POST'])
+def save_key():
+    data = request.json
+    api_key = data.get('api_key', '').strip()
+    
+    if api_key:
+        # Save it to a local text file next to the executable
+        with open('api_key.txt', 'w') as f:
+            f.write(api_key)
+            
+        # Instantly wire the AI brain with the new key!
+        genai.configure(api_key=api_key)
+        return jsonify({"status": "success"})
+        
+    return jsonify({"error": "Invalid key"}), 400
+
 @app.route('/get_recent_files', methods=['GET'])
 def get_recent_files():
     return jsonify(db.get_recent_files(limit=5))
@@ -355,8 +381,10 @@ def walk_error_handler(exception):
 
 if __name__ == '__main__':
     try:
-        api_key = config.API_KEY
-        genai.configure(api_key=api_key)
+        key_path = 'api_key.txt'
+        if os.path.exists(key_path):
+            with open(key_path, 'r') as f:
+                genai.configure(api_key=f.read().strip())
 
         db = MetadataDB(config.DB_PATH)
         embedder = Embedder()  
