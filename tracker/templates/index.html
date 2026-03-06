@@ -352,6 +352,48 @@
             border-left: 2px solid #3E3B5A;
             font-style: italic;
         }
+
+        /* --- 8. EXPLORE UI (Popular & Recents) --- */
+        #explore-state { 
+            padding: 4rem; 
+            flex-direction: column; 
+            overflow-y: auto; 
+            display: none; /* hidden by default */
+        }
+        #explore-state.visible { display: flex; }
+
+        .explore-header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 2rem; 
+        }
+        .explore-header h2 { margin: 0; font-size: 2.2rem; font-weight: 500; }
+        
+        /* The Toggle Buttons */
+        .view-toggles { 
+            display: flex; gap: 0.5rem; 
+            background: var(--bg-card); 
+            padding: 0.4rem; 
+            border-radius: 8px; 
+            border: 1px solid #1E1C3A;
+        }
+        .toggle-btn { 
+            background: transparent; border: none; color: var(--text-muted); 
+            padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; 
+            font-family: var(--font-main); font-weight: bold; transition: 0.2s;
+        }
+        .toggle-btn:hover { color: white; }
+        .toggle-btn.active { background: var(--bg-sidebar); color: var(--text-primary); }
+
+        /* The Views */
+        .explore-wrapper { display: grid; gap: 1.5rem; }
+        
+        /* Grid Matrix */
+        .explore-wrapper.grid-view { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+        
+        /* List Mode (Stacks them like rows) */
+        .explore-wrapper.list-view { grid-template-columns: 1fr; }
     </style>
 </head>
 <body>
@@ -359,19 +401,19 @@
     <div class="app-wrapper">
         <aside class="sidebar">
             <nav class="nav-links">
-                <a href="#" class="nav-item active">
+                <a href="#" class="nav-item active" onclick="navTo('home')">
                     <span class="icon">⌂</span> Home
                 </a>
-                <a href="#" class="nav-item" onclick="focusSearch()">
-                    <span class="icon">⚲</span> Search
+                <a href="#" class="nav-item" onclick="navTo('popular')">
+                    <span class="icon">★</span> Popular
                 </a>
-                <a href="#" class="nav-item">
+                <a href="#" class="nav-item" onclick="navTo('recent')">
                     <span class="icon">⏱</span> Recents
                 </a>
             </nav>
             
             <div class="settings-container">
-                <button class="icon-button settings-btn">⚙</button>
+                <button class="icon-button settings-btn" title="Settings coming soon...">⚙</button>
             </div>
         </aside>
 
@@ -389,26 +431,137 @@
                 </div>
             </div>
 
-            <div id="chat-state" class="state-container hidden" style="flex-direction: column;">
-                
-                <div id="chatWindow" class="chat-window">
-                    </div>
-
-                <div class="chat-input-area">
-                    <div class="search-bar-container">
-                        <span class="search-icon">⚲</span>
-                        <input type="text" id="chatInput" class="main-search-input" placeholder="Ask a follow-up or search for something else..." onkeypress="handleKeyPress(event, 'chat')">
-                        <div id="chat-spinner" class="spinner"></div>
+            <div id="explore-state" class="state-container hidden">
+                <div class="explore-header">
+                    <h2 id="exploreTitle">Explore</h2>
+                    <div class="view-toggles">
+                        <button class="toggle-btn active" onclick="setView('grid')">⊞ Grid</button>
+                        <button class="toggle-btn" onclick="setView('list')">☰ List</button>
                     </div>
                 </div>
-
+                <div id="exploreContainer" class="explore-wrapper grid-view">
+                    </div>
             </div>
+
+            <div id="chat-state" class="state-container hidden" style="flex-direction: column;">
+               <div id="chatWindow" class="chat-window"></div>
+               <div class="chat-input-area">
+                   <div class="search-bar-container">
+                       <span class="search-icon">⚲</span>
+                       <input type="text" id="chatInput" class="main-search-input" placeholder="Ask a follow-up or search for something else..." onkeypress="handleKeyPress(event, 'chat')">
+                       <div id="chat-spinner" class="spinner"></div>
+                   </div>
+               </div>
+            </div>
+
         </main>
     </div>
 
     <script id="app-scripts">
+        // --- 1. MEMORY & INITIALIZATION ---
         let chatHistory = [];
         window.onload = () => document.getElementById('welcomeInput').focus();
+
+        // --- 2. NAVIGATION & EXPLORE VIEWS ---
+        
+        // Handle Sidebar Clicks
+        function navTo(page) {
+            // Remove the active highlight from all tabs
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            
+            if (page === 'home') {
+                document.querySelectorAll('.nav-item')[0].classList.add('active');
+                showState('welcome');
+            } else if (page === 'popular') {
+                document.querySelectorAll('.nav-item')[1].classList.add('active');
+                document.getElementById('exploreTitle').innerText = "Frequently Accessed";
+                fetchExploreData('/get_popular_files');
+            } else if (page === 'recent') {
+                document.querySelectorAll('.nav-item')[2].classList.add('active');
+                document.getElementById('exploreTitle').innerText = "Recently Modified";
+                fetchExploreData('/get_recent_files');
+            }
+        }
+
+        // Handle the Grid/List toggle buttons
+        function setView(viewType) {
+            const container = document.getElementById('exploreContainer');
+            const btns = document.querySelectorAll('.toggle-btn');
+            
+            if (viewType === 'grid') {
+                container.classList.replace('list-view', 'grid-view');
+                btns[0].classList.add('active');
+                btns[1].classList.remove('active');
+            } else {
+                container.classList.replace('grid-view', 'list-view');
+                btns[0].classList.remove('active');
+                btns[1].classList.add('active');
+            }
+        }
+
+        // Fetch data from the SQLite endpoints
+        async function fetchExploreData(endpoint) {
+            showState('explore');
+            const container = document.getElementById('exploreContainer');
+            container.innerHTML = '<div style="color: var(--text-muted); font-style: italic;">Loading archives...</div>';
+            
+            try {
+                const response = await fetch(endpoint);
+                const files = await response.json();
+                
+                container.innerHTML = '';
+                if (files.length === 0) {
+                    container.innerHTML = '<div style="color: var(--text-muted);">No files found in this category yet.</div>';
+                    return;
+                }
+                
+                files.forEach(file => {
+                    const modifiedDate = new Date(file.modified_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                    
+                    const card = document.createElement('div');
+                    card.className = 'file-card';
+                    card.innerHTML = `
+                        <h3 class="file-name" title="${file.name}">${file.name}</h3>
+                        <p class="file-path">${file.path}</p>
+                        <div class="file-meta">Modified: ${modifiedDate} | Accessed: ${file.access_count}</div>
+                    `;
+                    container.appendChild(card);
+                });
+            } catch (error) {
+                container.innerHTML = '<div style="color: #ff5555;">Failed to load data from the MetaTrack core.</div>';
+            }
+        }
+
+        // Updated State Manager
+        function showState(stateName) {
+            const states = {
+                'welcome': document.getElementById('welcome-state'),
+                'chat': document.getElementById('chat-state'),
+                'explore': document.getElementById('explore-state')
+            };
+
+            // Hide all states safely
+            Object.values(states).forEach(state => {
+                if (state) {
+                    state.classList.remove('visible');
+                    state.classList.add('hidden');
+                }
+            });
+
+            // Show only the target state
+            if (states[stateName]) {
+                states[stateName].classList.remove('hidden');
+                states[stateName].classList.add('visible');
+            }
+
+            // Auto-focus logic for returning to welcome screen
+            if (stateName === 'welcome') {
+                document.getElementById('welcomeInput').value = '';
+                document.getElementById('welcomeInput').focus();
+            }
+        }
+
+        // --- 3. CORE CHAT LOGIC ---
 
         function handleKeyPress(event, source) {
             if (event.key === 'Enter') {
@@ -424,22 +577,18 @@
         async function performSearch(query, source) {
             const spinnerId = source === 'welcome' ? 'welcome-spinner' : 'chat-spinner';
             const searchContainer = document.getElementById(spinnerId).parentElement;
-            const chatWindow = document.getElementById('chatWindow');
-
-            // 1. Show loading state
+            
+            // Show loading state
             searchContainer.classList.add('loading');
 
-            // 2. If it's the first search, switch to chat view
-            if (source === 'welcome') {
-                document.getElementById('welcome-state').classList.replace('visible', 'hidden');
-                document.getElementById('chat-state').classList.replace('hidden', 'visible');
-            }
+            // Switch directly to the chat interface using our new state manager
+            showState('chat');
 
-            // 3. Immediately append User's message bubble
+            // Immediately append User's message bubble
             appendUserMessage(query);
 
             try {
-                // 4. Fetch from Backend
+                // Fetch from Backend
                 const response = await fetch('/search', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -454,7 +603,7 @@
                     return;
                 }
 
-                // 5. Update AI context and append AI message with files
+                // Update AI context and append AI message with files
                 chatHistory.push({ role: 'user', text: query });
                 chatHistory.push({ role: 'agent', text: data.answer });
 
@@ -488,7 +637,7 @@
                     const modifiedDate = new Date(file.modified_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                     const score = file.score.toFixed(2);
                     
-                    // The new collapsible snippet logic
+                    // The collapsible snippet logic
                     const snippetText = file.snippet || "No preview available.";
                     const snippetHTML = `
                         <details class="snippet-details">
