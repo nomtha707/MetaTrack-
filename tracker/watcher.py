@@ -231,6 +231,46 @@ def search_endpoint():
         logging.error(f"Error during search: {e}\n{traceback.format_exc()}")
         return jsonify({"error": "Internal server error"}), 500
 
+@app.route('/open_file', methods=['POST'])
+def open_file_endpoint():
+    global db
+    data = request.json
+    filepath = data.get('path')
+    
+    if filepath and os.path.exists(filepath):
+        try:
+            # os.startfile is the magic Windows command to open a file normally
+            os.startfile(filepath) 
+            
+            # Since they clicked it, let's bump the popularity score!
+            db.increment_access_count(filepath)
+            
+            return jsonify({"status": "success"})
+        except Exception as e:
+            logging.error(f"Failed to open file {filepath}: {e}")
+            return jsonify({"error": str(e)}), 500
+            
+    return jsonify({"error": "File not found on disk"}), 404
+
+@app.route('/open_folder', methods=['POST'])
+def open_folder_endpoint():
+    data = request.json
+    filepath = data.get('path')
+    
+    if filepath and os.path.exists(filepath):
+        try:
+            # Get the directory that contains the file
+            folder_path = os.path.dirname(filepath)
+            
+            # Open that directory in Windows Explorer
+            os.startfile(folder_path) 
+            return jsonify({"status": "success"})
+        except Exception as e:
+            logging.error(f"Failed to open folder for {filepath}: {e}")
+            return jsonify({"error": str(e)}), 500
+            
+    return jsonify({"error": "Path not found on disk"}), 404
+
 @app.route('/get_recent_files', methods=['GET'])
 def get_recent_files():
     return jsonify(db.get_recent_files(limit=5))

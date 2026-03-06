@@ -394,6 +394,28 @@
         
         /* List Mode (Stacks them like rows) */
         .explore-wrapper.list-view { grid-template-columns: 1fr; }
+
+        /* Make file names look and act like links */
+        .file-name.clickable {
+            cursor: pointer;
+            transition: color 0.2s ease, text-decoration 0.2s ease;
+        }
+        .file-name.clickable:hover {
+            color: white;
+            text-decoration: underline;
+        }
+
+        /* Make file paths look clickable */
+        .file-path.clickable-path {
+            cursor: pointer;
+            transition: color 0.2s ease, text-decoration 0.2s ease;
+        }
+        
+        /* Highlight it with your signature purple on hover */
+        .file-path.clickable-path:hover {
+            color: var(--accent-purple);
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
@@ -521,8 +543,8 @@
                     const card = document.createElement('div');
                     card.className = 'file-card';
                     card.innerHTML = `
-                        <h3 class="file-name" title="${file.name}">${file.name}</h3>
-                        <p class="file-path">${file.path}</p>
+                        <h3 class="file-name clickable" title="${file.name}" onclick="openFile(this.getAttribute('data-path'))" data-path="${file.path}">${file.name}</h3>
+                        <p class="file-path clickable-path" title="Open containing folder" onclick="openFolder(this.getAttribute('data-path'))" data-path="${file.path}">${file.path}</p>
                         <div class="file-meta">Modified: ${modifiedDate} | Accessed: ${file.access_count}</div>
                     `;
                     container.appendChild(card);
@@ -648,8 +670,8 @@
 
                     filesHTML += `
                         <div class="file-card">
-                            <h3 class="file-name" title="${file.name}">${file.name}</h3>
-                            <p class="file-path">${file.path}</p>
+                            <h3 class="file-name clickable" title="${file.name}" onclick="openFile(this.getAttribute('data-path'))" data-path="${file.path}">${file.name}</h3>
+                            <p class="file-path clickable-path" title="Open containing folder" onclick="openFolder(this.getAttribute('data-path'))" data-path="${file.path}">${file.path}</p>
                             ${snippetHTML}
                             <div class="file-meta">Score: ${score} | Modified: ${modifiedDate} | Accessed: ${file.access_count}</div>
                         </div>
@@ -668,6 +690,40 @@
             chatWindow.appendChild(row);
             scrollToBottom();
             document.getElementById('chatInput').focus();
+        }
+
+        // The function that talks to the backend to open the file
+        async function openFile(filePath) {
+            try {
+                const response = await fetch('/open_file', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: filePath })
+                });
+                const result = await response.json();
+                if (result.error) {
+                    alert("Could not open file: " + result.error);
+                }
+            } catch (error) {
+                console.error("Failed to trigger file open:", error);
+            }
+        }
+
+        // The function that talks to the backend to open the containing folder
+        async function openFolder(filePath) {
+            try {
+                const response = await fetch('/open_folder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: filePath })
+                });
+                const result = await response.json();
+                if (result.error) {
+                    alert("Could not open folder: " + result.error);
+                }
+            } catch (error) {
+                console.error("Failed to trigger folder open:", error);
+            }
         }
 
         function scrollToBottom() {
