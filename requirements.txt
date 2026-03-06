@@ -10,3 +10,4 @@ customtkinter
 Pillow
 scikit-learn
 pymupdf
+pywebview

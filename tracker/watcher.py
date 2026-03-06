@@ -1,4 +1,6 @@
 # tracker/watcher.py (Multimodal Two-Tower Server)
+import webview
+from flask import render_template
 import os
 import time
 import json
@@ -122,6 +124,11 @@ def _generate_snippet(full_text: str, query: str, snippet_length=250):
 
 # --- FLASK SERVER APP ---
 app = Flask(__name__)
+
+# --- THE FRONTEND UI ---
+@app.route('/')
+def home():
+    return render_template('index.html')
 
 @app.route('/search', methods=['POST'])
 def search_endpoint():
@@ -312,43 +319,51 @@ if __name__ == '__main__':
         db = MetadataDB(config.DB_PATH)
         embedder = Embedder()  
         
-        # --- INITIALIZING TWO DATABASES ---
         vstore_text = SimpleVectorStore(path=config.EMBEDDINGS_PATH + "_text", dim=384)
         vstore_image = SimpleVectorStore(path=config.EMBEDDINGS_PATH + "_image", dim=512)
 
         agent_model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=AGENT_SYSTEM_PROMPT)
 
-        threading.Thread(target=run_flask_app, daemon=True).start()
+        # --- NEW: RUN THE TRACKER IN A BACKGROUND THREAD ---
+        def run_tracker():
+            watch_paths = []
+            if os.path.exists(config.SETTINGS_PATH):
+                with open(config.SETTINGS_PATH, 'r') as f:
+                    watch_paths = json.load(f).get('watch_paths', [])
 
-        watch_paths = []
-        if os.path.exists(config.SETTINGS_PATH):
-            with open(config.SETTINGS_PATH, 'r') as f:
-                watch_paths = json.load(f).get('watch_paths', [])
+            event_handler = Handler()
+            excluded_dirs_lower = [d.lower() for d in config.EXCLUDED_DIRS]
 
-        event_handler = Handler()
-        excluded_dirs_lower = [d.lower() for d in config.EXCLUDED_DIRS]
+            for path in watch_paths:
+                if os.path.exists(path):
+                    for root, dirs, files in os.walk(path, topdown=True, onerror=walk_error_handler):
+                        dirs[:] = [d for d in dirs if d.lower() not in excluded_dirs_lower and not d.startswith('.')]
+                        for filename in files:
+                            file_path = os.path.join(root, filename)
+                            if not event_handler._is_path_excluded(file_path):
+                                event_handler.process_file(file_path, True)
 
-        for path in watch_paths:
-            if os.path.exists(path):
-                for root, dirs, files in os.walk(path, topdown=True, onerror=walk_error_handler):
-                    dirs[:] = [d for d in dirs if d.lower() not in excluded_dirs_lower and not d.startswith('.')]
-                    for filename in files:
-                        file_path = os.path.join(root, filename)
-                        if not event_handler._is_path_excluded(file_path):
-                            event_handler.process_file(file_path, True)
+            observer = Observer()
+            for path in watch_paths:
+                if os.path.exists(path):
+                    observer.schedule(event_handler, path, recursive=True)
 
-        observer = Observer()
-        for path in watch_paths:
-            if os.path.exists(path):
-                observer.schedule(event_handler, path, recursive=True)
+            if watch_paths: observer.start()
 
-        if watch_paths: observer.start()
+            try:
+                while True: time.sleep(1)
+            except KeyboardInterrupt:
+                if observer.is_alive(): observer.stop()
+            if observer.is_alive(): observer.join()
 
-        try:
-            while True: time.sleep(1)
-        except KeyboardInterrupt:
-            if observer.is_alive(): observer.stop()
-        if observer.is_alive(): observer.join()
+        # Start the tracker thread (daemon=True means it safely dies when you close the app window!)
+        tracker_thread = threading.Thread(target=run_tracker, daemon=True)
+        tracker_thread.start()
+
+        # --- NEW: START THE NATIVE DESKTOP WINDOW ---
+        # pywebview automatically hosts the Flask app for us!
+        window = webview.create_window('MetaTrack Search Agent', app, width=1000, height=700)
+        webview.start()
 
     except Exception as e:
         logging.error(f"FATAL ERROR: {e}\n{traceback.format_exc()}")

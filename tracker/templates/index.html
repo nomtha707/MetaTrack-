@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MetaTrack Search Agent</title>
+    <style>
+        :root {
+            /* Background colors */
+            --bg-main: #0A091A;       /* The main deep, dark navy/purple */
+            --bg-sidebar: #121025;    /* The slightly lighter dark purple for the sidebar */
+            --bg-card: #181630;       /* Lighter purple for cards and summary */
+            
+            /* Text colors */
+            --text-primary: white;    /* White text for main elements */
+            --text-muted: #8F8CA9;    /* Muted grey/purple for paths and metadata */
+            
+            /* Accent colors */
+            --accent-purple: #EAD5F9; /* The pale lavender/pink for the search bar */
+            --accent-active: #9D74E5; /* Brighter purple for the active tab highlight */
+            --hover-item: #211E3A;   /* Slight highlight for menu item hover */
+            
+            /* Typography & Spacing */
+            --font-main: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            --font-welcome: 'Segoe UI', system-ui, serif; /* You can use a serif font here if preferred for 'welcome' */
+            --sidebar-width: 260px;
+        }
+
+        /* Basic resets to ensure full screen application */
+        * { box-sizing: border-box; }
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100vh;
+            background-color: var(--bg-main);
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            overflow: hidden; /* App window doesn't scroll; components inside do */
+        }
+
+        /* --- LAYOUT --- */
+        .app-wrapper {
+            display: flex;
+            width: 100%; height: 100vh;
+        }
+
+        /* --- 1. SIDEBAR STYLING --- */
+        .sidebar {
+            width: var(--sidebar-width);
+            height: 100%;
+            background-color: var(--bg-sidebar);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between; /* Links top, settings bottom */
+            padding: 2rem 0;
+            border-right: 1px solid #1E1C3A; /* Very subtle border */
+        }
+
+        /* Navigation Links */
+        .nav-links { display: flex; flex-direction: column; gap: 0.5rem; }
+
+        .nav-item {
+            display: flex; align-items: center; gap: 1rem;
+            padding: 1rem 2rem;
+            color: #C1BFCF;
+            text-decoration: none;
+            font-size: 1.15rem;
+            transition: all 0.2s ease;
+            position: relative; /* For active highlight */
+        }
+
+        .nav-item .icon { font-size: 1.3rem; }
+
+        .nav-item:hover {
+            background-color: var(--hover-item);
+            color: white;
+        }
+
+        /* The 'active' tab highlight (brighter purple) */
+        .nav-item.active {
+            color: white;
+            font-weight: 600;
+        }
+
+        .nav-item.active::before {
+            content: '';
+            position: absolute; left: 0; top: 0; bottom: 0;
+            width: 4px;
+            background-color: var(--accent-active);
+            border-radius: 0 4px 4px 0;
+        }
+
+        /* Settings Icon */
+        .settings-container { padding: 0 2rem; }
+        .icon-button {
+            background: none; border: none; cursor: pointer;
+            color: #C1BFCF; font-size: 1.8rem;
+            transition: color 0.2s ease;
+        }
+        .icon-button:hover { color: white; }
+
+        /* --- 2. MAIN CONTENT STYLING --- */
+        .main-content {
+            flex: 1; /* Take all remaining width */
+            position: relative;
+            height: 100%;
+        }
+
+        /* Layout for Results State (AI summary top, grid bottom) */
+        .results-layout {
+            display: flex; flex-direction: column; gap: 2rem;
+            height: 100%; padding: 3rem;
+            overflow: hidden; /* This container doesn't scroll */
+        }
+
+        /* Grid for results cards */
+        .results-grid {
+            flex: 1; /* Take remaining space */
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); /* Adaptive grid */
+            gap: 1.5rem;
+            overflow-y: auto; /* Grid scrolls vertically */
+            padding-bottom: 2rem;
+        }
+
+        /* --- 3. STATE MANAGEMENT (VISIBLE vs HIDDEN) --- */
+        .state-container {
+            position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+        }
+        .visible { opacity: 1; visibility: visible; display: flex; }
+        .hidden { opacity: 0; visibility: hidden; display: none !important; }
+
+        /* Welcome/Initial State */
+        .welcome-text {
+            font-size: 3.5rem; line-height: 1.1; font-weight: 500;
+            margin: 0 0 4rem 0; color: var(--text-primary); text-align: center;
+        }
+        .center-content {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            width: 100%; height: 100%; padding-bottom: 10vh; /* Lift center content slightly */
+        }
+
+        /* --- 4. THE SEARCH BAR (EXACT Match) --- */
+        .search-bar-container {
+            position: relative; display: flex; align-items: center;
+            transition: width 0.3s ease;
+        }
+
+        /* Large version (centered in welcome state) */
+        .search-bar-container.large { width: 60%; max-width: 800px; }
+
+        /* The exact pale lavender input field */
+        .main-search-input {
+            width: 100%; height: 70px; /* Large height */
+            background-color: var(--accent-purple);
+            color: #211E3A; /* Dark text inside light input */
+            border: none; border-radius: 35px; /* Fully rounded */
+            padding: 0 4rem 0 4.5rem; /* Space for icons */
+            font-size: 1.35rem; font-family: var(--font-main);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.3); /* Premium shadow */
+        }
+
+        .main-search-input:focus { outline: none; }
+        .main-search-input::placeholder { color: rgba(33, 30, 58, 0.6); }
+
+        /* Search Magnifying Glass Icon (Inside the input) */
+        .search-icon {
+            position: absolute; left: 1.8rem;
+            font-size: 1.8rem; color: rgba(33, 30, 58, 0.6);
+        }
+
+        /* --- 5. RESULTS UI COMPONENTS --- */
+        /* AI Summary Card (The standard AI response box) */
+        .ai-summary-card {
+            background-color: var(--bg-card);
+            border-radius: 12px; padding: 1.5rem;
+            border: 1px solid #1E1C3A;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            line-height: 1.7;
+            max-height: 250px;
+            overflow-y: auto;
+        }
+
+        .ai-summary-card .card-header {
+            color: var(--accent-active); font-weight: bold;
+            display: flex; align-items: center; gap: 0.8rem;
+            font-size: 1.1rem; margin-bottom: 1rem;
+            text-transform: uppercase; letter-spacing: 1px;
+        }
+
+        .ai-chat-text { color: var(--text-primary); font-size: 1.1rem; }
+
+        /* File Card (The individual search results) */
+        .file-card {
+            background-color: var(--bg-card);
+            border-radius: 12px; padding: 1.5rem;
+            border: 1px solid #1E1C3A;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            display: flex; flex-direction: column; gap: 0.8rem;
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .file-card:hover { transform: translateY(-3px); border-color: #3E3B5A; }
+
+        /* Title of file (Blueish like a classic link) */
+        .file-name {
+            color: #55AFFF; font-size: 1.3rem; font-weight: bold;
+            margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+
+        /* Path of file (Muted text) */
+        .file-path { color: var(--text-muted); font-size: 0.9rem; margin: 0; word-break: break-all; font-style: italic; }
+
+        /* Content Snippet */
+        .file-snippet { color: #D1D1D1; font-size: 1.05rem; line-height: 1.6; margin: 0.2rem 0; display: block; }
+        .meta-tag { color: var(--accent-purple); font-weight: bold; } /* For 'Snippet:' part */
+
+        /* Metadata at bottom (Score, Modified, etc.) */
+        .file-meta { font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-top: 0.5rem; }
+
+        /* --- 6. LOADING SPINNER STYLING --- */
+        .search-bar-container .spinner {
+            display: none; position: absolute; right: 1.8rem;
+            width: 30px; height: 30px;
+            border: 4px solid rgba(33, 30, 58, 0.2); border-top: 4px solid #211E3A;
+            border-radius: 50%; animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .loading .spinner { display: block; } /* Show spinner when parent has 'loading' class */
+
+        /* The scrolling container */
+        .chat-window {
+            flex: 1; /* Takes up all space above the input */
+            padding: 2rem 4rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+            scroll-behavior: smooth;
+        }
+
+        /* Bottom pinned input */
+        .chat-input-area {
+            height: 120px;
+            padding: 0 4rem;
+            display: flex;
+            align-items: center;
+            background: linear-gradient(to top, var(--bg-main) 70%, transparent);
+        }
+
+        .chat-input-area .search-bar-container { width: 100%; }
+
+        /* Message Rows */
+        .message-row { display: flex; width: 100%; }
+        .message-row.user { justify-content: flex-end; }
+        .message-row.ai { justify-content: flex-start; }
+
+        /* The Bubbles */
+        .bubble {
+            padding: 1.2rem 1.8rem;
+            border-radius: 20px;
+            max-width: 80%;
+            font-size: 1.1rem;
+            line-height: 1.6;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        .bubble.user {
+            background-color: var(--accent-purple);
+            color: #211E3A;
+            border-bottom-right-radius: 4px; /* classic chat tail */
+            font-weight: 500;
+        }
+
+        .bubble.ai {
+            background-color: var(--bg-card);
+            color: var(--text-primary);
+            border-bottom-left-radius: 4px; /* classic chat tail */
+            border: 1px solid #1E1C3A;
+        }
+
+        /* AI Agent Header inside bubble */
+        .bubble-header {
+            color: var(--accent-active);
+            font-weight: bold;
+            font-size: 0.9rem;
+            margin-bottom: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        /* File Cards inside Chat Bubble */
+        .chat-files-container {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+
+        /* Tweak the existing file card to fit inside a bubble */
+        .bubble .file-card {
+            background-color: #121025;
+            box-shadow: none;
+            padding: 1rem;
+        }
+
+        /* --- CHAT UI TWEAKS --- */
+        
+        /* 1. Shrink the bottom chat bar */
+        .chat-input-area { height: 80px; }
+        #chatInput { 
+            height: 50px; 
+            font-size: 1.1rem; 
+            padding: 0 2rem 0 3.5rem; 
+        }
+        
+        /* Adjust the magnifying glass for the smaller input */
+        .chat-input-area .search-icon { font-size: 1.3rem; left: 1.5rem; }
+
+        /* 2. Format the AI's text list neatly */
+        .ai-text-response {
+            white-space: pre-wrap; /* This forces the bullet points onto new lines! */
+            line-height: 1.6;
+            margin-bottom: 1rem;
+        }
+
+        /* 3. Collapsible Snippet Styling */
+        .snippet-details { margin-top: 0.5rem; }
+        
+        .snippet-details summary {
+            cursor: pointer;
+            color: var(--accent-purple);
+            font-weight: bold;
+            font-size: 0.9rem;
+            outline: none;
+            user-select: none;
+            transition: color 0.2s;
+        }
+        
+        .snippet-details summary:hover { color: white; }
+        
+        .snippet-content {
+            color: #D1D1D1;
+            font-size: 0.95rem;
+            line-height: 1.5;
+            margin-top: 0.5rem;
+            padding-left: 1rem;
+            border-left: 2px solid #3E3B5A;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="app-wrapper">
+        <aside class="sidebar">
+            <nav class="nav-links">
+                <a href="#" class="nav-item active">
+                    <span class="icon">⌂</span> Home
+                </a>
+                <a href="#" class="nav-item" onclick="focusSearch()">
+                    <span class="icon">⚲</span> Search
+                </a>
+                <a href="#" class="nav-item">
+                    <span class="icon">⏱</span> Recents
+                </a>
+            </nav>
+            
+            <div class="settings-container">
+                <button class="icon-button settings-btn">⚙</button>
+            </div>
+        </aside>
+
+        <main class="main-content">
+            
+            <div id="welcome-state" class="state-container visible">
+                <div class="center-content">
+                    <h1 class="welcome-text">Hello!<br>What are you looking for?</h1>
+                    
+                    <div class="search-bar-container large">
+                        <span class="search-icon">⚲</span>
+                        <input type="text" id="welcomeInput" class="main-search-input" placeholder="Search for files, concepts, or images..." onkeypress="handleKeyPress(event, 'welcome')">
+                        <div id="welcome-spinner" class="spinner"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="chat-state" class="state-container hidden" style="flex-direction: column;">
+                
+                <div id="chatWindow" class="chat-window">
+                    </div>
+
+                <div class="chat-input-area">
+                    <div class="search-bar-container">
+                        <span class="search-icon">⚲</span>
+                        <input type="text" id="chatInput" class="main-search-input" placeholder="Ask a follow-up or search for something else..." onkeypress="handleKeyPress(event, 'chat')">
+                        <div id="chat-spinner" class="spinner"></div>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <script id="app-scripts">
+        let chatHistory = [];
+        window.onload = () => document.getElementById('welcomeInput').focus();
+
+        function handleKeyPress(event, source) {
+            if (event.key === 'Enter') {
+                const inputId = source === 'welcome' ? 'welcomeInput' : 'chatInput';
+                const query = document.getElementById(inputId).value;
+                if (query.trim()) {
+                    document.getElementById(inputId).value = ''; // clear input
+                    performSearch(query, source);
+                }
+            }
+        }
+
+        async function performSearch(query, source) {
+            const spinnerId = source === 'welcome' ? 'welcome-spinner' : 'chat-spinner';
+            const searchContainer = document.getElementById(spinnerId).parentElement;
+            const chatWindow = document.getElementById('chatWindow');
+
+            // 1. Show loading state
+            searchContainer.classList.add('loading');
+
+            // 2. If it's the first search, switch to chat view
+            if (source === 'welcome') {
+                document.getElementById('welcome-state').classList.replace('visible', 'hidden');
+                document.getElementById('chat-state').classList.replace('hidden', 'visible');
+            }
+
+            // 3. Immediately append User's message bubble
+            appendUserMessage(query);
+
+            try {
+                // 4. Fetch from Backend
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query, history: chatHistory })
+                });
+
+                const data = await response.json();
+                searchContainer.classList.remove('loading');
+
+                if (data.error) {
+                    appendAIMessage("System Error: " + data.error);
+                    return;
+                }
+
+                // 5. Update AI context and append AI message with files
+                chatHistory.push({ role: 'user', text: query });
+                chatHistory.push({ role: 'agent', text: data.answer });
+
+                appendAIMessage(data.answer, data.files);
+
+            } catch (error) {
+                console.error("Search Failure:", error);
+                searchContainer.classList.remove('loading');
+                appendAIMessage("Failed to communicate with the MetaTrack engine. Is the server running?");
+            }
+        }
+
+        function appendUserMessage(text) {
+            const chatWindow = document.getElementById('chatWindow');
+            const row = document.createElement('div');
+            row.className = 'message-row user';
+            row.innerHTML = `<div class="bubble user">${text}</div>`;
+            chatWindow.appendChild(row);
+            scrollToBottom();
+        }
+
+        function appendAIMessage(text, files = []) {
+            const chatWindow = document.getElementById('chatWindow');
+            const row = document.createElement('div');
+            row.className = 'message-row ai';
+            
+            let filesHTML = '';
+            if (files && files.length > 0) {
+                filesHTML = `<div class="chat-files-container">`;
+                files.forEach(file => {
+                    const modifiedDate = new Date(file.modified_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                    const score = file.score.toFixed(2);
+                    
+                    // The new collapsible snippet logic
+                    const snippetText = file.snippet || "No preview available.";
+                    const snippetHTML = `
+                        <details class="snippet-details">
+                            <summary>View Snippet</summary>
+                            <div class="snippet-content">"...${snippetText}..."</div>
+                        </details>
+                    `;
+
+                    filesHTML += `
+                        <div class="file-card">
+                            <h3 class="file-name" title="${file.name}">${file.name}</h3>
+                            <p class="file-path">${file.path}</p>
+                            ${snippetHTML}
+                            <div class="file-meta">Score: ${score} | Modified: ${modifiedDate} | Accessed: ${file.access_count}</div>
+                        </div>
+                    `;
+                });
+                filesHTML += `</div>`;
+            }
+
+            row.innerHTML = `
+                <div class="bubble ai">
+                    <div class="bubble-header"><span class="icon">✦</span> AI Agent</div>
+                    <div class="ai-text-response">${text}</div>
+                    ${filesHTML}
+                </div>
+            `;
+            chatWindow.appendChild(row);
+            scrollToBottom();
+            document.getElementById('chatInput').focus();
+        }
+
+        function scrollToBottom() {
+            const chatWindow = document.getElementById('chatWindow');
+            chatWindow.scrollTop = chatWindow.scrollHeight;
+        }
+    </script>
+</body>
+</html>
