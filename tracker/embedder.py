@@ -1,71 +1,108 @@
-# tracker/embedder.py
-import os
-import numpy as np
-import sys
-import traceback
-import logging
+import torch
 from sentence_transformers import SentenceTransformer
-from PIL import Image  # Required for loading images
-
-logging.getLogger("PIL").setLevel(logging.WARNING)
-
-def get_model_path(folder_name):
-    """Dynamically finds the model folder, even when bundled as an .exe"""
-    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-        bundle_dir = os.path.dirname(sys.executable)
-        model_dir = os.path.join(bundle_dir, 'model', folder_name)
-        if os.path.isdir(model_dir):
-            return model_dir
-    return folder_name
+import clip
+from PIL import Image
+import numpy as np
+import time
+import threading
+import gc
+import logging
 
 class Embedder:
-    def __init__(self):
+    def __init__(self, timeout_seconds=600): # 600 seconds = 10 minutes
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.timeout = timeout_seconds
+        
+        # 1. Models start completely empty to save RAM!
         self.text_model = None
-        self.image_model = None
-        self.text_dim = 384
-        self.image_dim = 512  # CLIP's dimension size
+        self.clip_model = None
+        self.clip_preprocess = None
+        
+        # 2. State tracking
+        self.last_used = time.time()
+        self.lock = threading.Lock() # Prevents background watcher and UI from crashing
+        
+        # 3. Start the Background Memory Manager
+        self.monitor_thread = threading.Thread(target=self._memory_monitor, daemon=True)
+        self.monitor_thread.start()
+        
+        logging.info("MetaTrack Memory Manager initialized (Models Sleeping).")
 
-        # --- 1. Load Text Model ---
-        try:
-            text_path = get_model_path('all-MiniLM-L6-v2')
-            logging.info(f"Loading TEXT model from: {text_path}")
-            self.text_model = SentenceTransformer(text_path)
-        except Exception as e:
-            logging.error(f"Failed to load Text Model: {e}")
+    def _load_models(self):
+        """Loads the heavy AI models into RAM only if they aren't loaded yet."""
+        if self.text_model is None:
+            logging.info("Waking up AI Models... Loading into RAM/VRAM.")
+            
+            # Load MiniLM
+            self.text_model = SentenceTransformer('all-MiniLM-L6-v2', device=self.device)
+            
+            # Load CLIP
+            self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=self.device)
+            
+            logging.info("AI Models successfully loaded and ready.")
 
-        # --- 2. Load Image Model (CLIP) ---
-        try:
-            image_path = get_model_path('clip-ViT-B-32')
-            logging.info(f"Loading IMAGE model from: {image_path}")
-            self.image_model = SentenceTransformer(image_path)
-        except Exception as e:
-            logging.error(f"Failed to load Image Model: {e}")
+    def _unload_models(self):
+        """Destroys the models and forces Windows to take the RAM back."""
+        if self.text_model is not None:
+            logging.info(f"{self.timeout/60} minutes of inactivity. Putting AI Models to sleep to save RAM...")
+            
+            # Delete references
+            self.text_model = None
+            self.clip_model = None
+            self.clip_preprocess = None
+            
+            # Force memory cleanup
+            gc.collect() 
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
 
-    def embed_text(self, text: str) -> np.ndarray:
-        """Standard text embedding for documents."""
-        if not text or not self.text_model:
-            return np.zeros(self.text_dim, dtype=float)
-        emb = self.text_model.encode(text, show_progress_bar=False)
-        return np.array(emb, dtype=float)
+    def _memory_monitor(self):
+        """Runs silently in the background checking the clock."""
+        while True:
+            time.sleep(30) # Wake up every 30 seconds to check the time
+            with self.lock:
+                if self.text_model is not None:
+                    # If the timer has expired, flush the memory
+                    if time.time() - self.last_used > self.timeout:
+                        self._unload_models()
 
-    def embed_image(self, image_path: str) -> np.ndarray:
-        """Reads a .jpg/.png and converts the pixels into semantic math."""
-        if not os.path.exists(image_path) or not self.image_model:
-            return np.zeros(self.image_dim, dtype=float)
-        try:
-            img = Image.open(image_path)
-            emb = self.image_model.encode(img, show_progress_bar=False)
-            return np.array(emb, dtype=float)
-        except Exception as e:
-            logging.error(f"Error embedding image {image_path}: {e}")
-            return np.zeros(self.image_dim, dtype=float)
+    def embed_text(self, text):
+        """Generates text embeddings safely."""
+        with self.lock:
+            self._load_models() # Make sure brain is awake
+            self.last_used = time.time() # Reset the timer
+            
+            embedding = self.text_model.encode(text, convert_to_numpy=True)
+            return embedding
 
-    def embed_query_for_image_search(self, text_query: str) -> np.ndarray:
-        """
-        MAGIC TRICK: To search for an image using text, we pass the text 
-        into the IMAGE model. CLIP bridges the gap between words and pixels.
-        """
-        if not text_query or not self.image_model:
-            return np.zeros(self.image_dim, dtype=float)
-        emb = self.image_model.encode(text_query, show_progress_bar=False)
-        return np.array(emb, dtype=float)
+    def embed_image(self, image_path):
+        """Generates image embeddings safely."""
+        with self.lock:
+            self._load_models() # Make sure brain is awake
+            self.last_used = time.time() # Reset the timer
+            
+            try:
+                image = Image.open(image_path).convert("RGB")
+                image_input = self.clip_preprocess(image).unsqueeze(0).to(self.device)
+                with torch.no_grad():
+                    embedding = self.clip_model.encode_image(image_input).cpu().numpy()[0]
+                return embedding
+            except Exception as e:
+                logging.error(f"Error embedding image {image_path}: {e}")
+                return np.zeros(512) # Fallback empty vector for CLIP
+
+    def embed_query_for_image_search(self, text):
+        """Generates text embeddings using CLIP to search for images."""
+        with self.lock:
+            self._load_models() # Make sure brain is awake
+            self.last_used = time.time() # Reset the timer
+            
+            try:
+                # CLIP needs text tokenized specifically for its own image-matching brain
+                text_input = clip.tokenize([text]).to(self.device)
+                with torch.no_grad():
+                    embedding = self.clip_model.encode_text(text_input).cpu().numpy()[0]
+                return embedding
+            except Exception as e:
+                logging.error(f"Error embedding query for image search '{text}': {e}")
+                return np.zeros(512) # Fallback empty vector
