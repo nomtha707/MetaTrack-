@@ -22,7 +22,7 @@
             
             /* Typography & Spacing */
             --font-main: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            --font-welcome: 'Segoe UI', system-ui, serif; /* You can use a serif font here if preferred for 'welcome' */
+            --font-welcome: 'Segoe UI', system-ui, serif; 
             --sidebar-width: 260px;
         }
 
@@ -91,35 +91,12 @@
 
         /* Settings Icon */
         .settings-container { padding: 0 2rem; }
-        .icon-button {
-            background: none; border: none; cursor: pointer;
-            color: #C1BFCF; font-size: 1.8rem;
-            transition: color 0.2s ease;
-        }
-        .icon-button:hover { color: white; }
 
         /* --- 2. MAIN CONTENT STYLING --- */
         .main-content {
             flex: 1; /* Take all remaining width */
             position: relative;
             height: 100%;
-        }
-
-        /* Layout for Results State (AI summary top, grid bottom) */
-        .results-layout {
-            display: flex; flex-direction: column; gap: 2rem;
-            height: 100%; padding: 3rem;
-            overflow: hidden; /* This container doesn't scroll */
-        }
-
-        /* Grid for results cards */
-        .results-grid {
-            flex: 1; /* Take remaining space */
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); /* Adaptive grid */
-            gap: 1.5rem;
-            overflow-y: auto; /* Grid scrolls vertically */
-            padding-bottom: 2rem;
         }
 
         /* --- 3. STATE MANAGEMENT (VISIBLE vs HIDDEN) --- */
@@ -170,26 +147,6 @@
         }
 
         /* --- 5. RESULTS UI COMPONENTS --- */
-        /* AI Summary Card (The standard AI response box) */
-        .ai-summary-card {
-            background-color: var(--bg-card);
-            border-radius: 12px; padding: 1.5rem;
-            border: 1px solid #1E1C3A;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-            line-height: 1.7;
-            max-height: 250px;
-            overflow-y: auto;
-        }
-
-        .ai-summary-card .card-header {
-            color: var(--accent-active); font-weight: bold;
-            display: flex; align-items: center; gap: 0.8rem;
-            font-size: 1.1rem; margin-bottom: 1rem;
-            text-transform: uppercase; letter-spacing: 1px;
-        }
-
-        .ai-chat-text { color: var(--text-primary); font-size: 1.1rem; }
-
         /* File Card (The individual search results) */
         .file-card {
             background-color: var(--bg-card);
@@ -416,6 +373,30 @@
             color: var(--accent-purple);
             text-decoration: underline;
         }
+
+        /* --- 9. Settings UI --- */
+        .settings-card {
+            background: var(--bg-card); padding: 2.5rem; 
+            border-radius: 12px; border: 1px solid #1E1C3A;
+        }
+        .folder-list { list-style: none; padding: 0; margin: 0 0 2rem 0; }
+        .folder-item {
+            display: flex; justify-content: space-between; align-items: center;
+            background: var(--bg-sidebar); padding: 1.2rem; border-radius: 8px;
+            margin-bottom: 0.8rem; border: 1px solid #1E1C3A;
+        }
+        .folder-item .folder-path { color: #C1BFCF; font-family: monospace; font-size: 1rem; }
+        .remove-btn {
+            background: transparent; color: #ff5555; border: none; font-size: 1.2rem;
+            cursor: pointer; transition: transform 0.2s;
+        }
+        .remove-btn:hover { transform: scale(1.2); }
+        .add-folder-btn {
+            background: var(--accent-active); color: white; border: none;
+            padding: 1rem 2rem; border-radius: 8px; font-weight: bold; font-size: 1rem;
+            cursor: pointer; transition: 0.2s; font-family: var(--font-main);
+        }
+        .add-folder-btn:hover { background: var(--accent-purple); color: #211E3A; }
     </style>
 </head>
 <body>
@@ -435,7 +416,9 @@
             </nav>
             
             <div class="settings-container">
-                <button class="icon-button settings-btn" title="Settings coming soon...">⚙</button>
+                <a href="#" class="nav-item" onclick="navTo('settings')" style="margin:0; padding: 0.8rem; display: flex; align-items: center; gap: 0.8rem; text-decoration: none; color: var(--text-muted); font-weight: bold; transition: 0.2s;">
+                    <span class="icon">⚙</span> Settings
+                </a>
             </div>
         </aside>
 
@@ -483,6 +466,26 @@
                     </div>
             </div>
 
+            <div id="settings-state" class="state-container hidden" style="flex-direction: column; padding: 4rem; overflow-y: auto;">
+                <div class="explore-header">
+                    <h2>Settings</h2>
+                </div>
+                <div class="settings-content" style="max-width: 800px; width: 100%;">
+                    <div class="settings-card">
+                        <h3 style="margin-top: 0; font-size: 1.5rem;">Watched Folders</h3>
+                        <p style="color: var(--text-muted); margin-bottom: 2rem; line-height: 1.5;">Select the directories MetaTrack should index and search. <br><strong style="color: var(--accent-purple);">Note:</strong> You must restart the application for new folders to be scanned.</p>
+                        
+                        <ul id="folderList" class="folder-list">
+                            </ul>
+                        
+                        <div style="display: flex; gap: 1rem; align-items: center;">
+                            <button class="add-folder-btn" onclick="triggerAddFolder()">+ Add Folder</button>
+                            <button id="continueSetupBtn" class="add-folder-btn hidden" style="background: var(--accent-purple); color: #211E3A;" onclick="continueSetup()">Continue ➔</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <div id="chat-state" class="state-container hidden" style="flex-direction: column;">
                <div id="chatWindow" class="chat-window"></div>
                <div class="chat-input-area">
@@ -500,16 +503,33 @@
     <script id="app-scripts">
         // --- 1. MEMORY & INITIALIZATION ---
         let chatHistory = [];
+        let isFirstTimeSetup = false;
         window.onload = async () => {
-            // Check if the engine has a key before showing the search bar
             try {
-                const res = await fetch('/check_setup');
-                const data = await res.json();
-                
-                if (data.status === 'needs_key') {
+                // 1. Check if they have any folders
+                const folderRes = await fetch('/get_settings');
+                const folderData = await folderRes.json();
+
+                // 2. Check if they have an API key
+                const keyRes = await fetch('/check_setup');
+                const keyData = await keyRes.json();
+
+                // 3. The Onboarding Routing Logic
+                if (folderData.watch_paths.length === 0) {
+                    isFirstTimeSetup = true;
+                    // Step 1: Force them to the Settings tab to add a folder
+                    navTo('settings');
+                    
+                    // Add a temporary helper message so they know what to do
+                    const header = document.querySelector('.settings-card h3');
+                    if(header) header.innerHTML = "Welcome! Step 1: Add a Folder to Index";
+                    
+                } else if (keyData.status === 'needs_key') {
+                    // Step 2: Folders exist, but need API key
                     showState('setup');
                     document.getElementById('apiKeyInput').focus();
                 } else {
+                    // Step 3: Fully set up! Unlock the app.
                     showState('welcome');
                 }
             } catch (e) {
@@ -536,6 +556,10 @@
                 document.querySelectorAll('.nav-item')[2].classList.add('active');
                 document.getElementById('exploreTitle').innerText = "Recently Modified";
                 fetchExploreData('/get_recent_files');
+            } else if (page === 'settings') {
+                document.querySelectorAll('.nav-item')[3].classList.add('active');
+                showState('settings');
+                fetchSettings();
             }
         }
 
@@ -594,7 +618,8 @@
                 'setup': document.getElementById('setup-state'),
                 'welcome': document.getElementById('welcome-state'),
                 'chat': document.getElementById('chat-state'),
-                'explore': document.getElementById('explore-state')
+                'explore': document.getElementById('explore-state'),
+                'settings': document.getElementById('settings-state')
             };
 
             // Hide all states safely
@@ -727,7 +752,8 @@
             document.getElementById('chatInput').focus();
         }
 
-        // The function that talks to the backend to open the file
+        // --- 4. BACKEND ACTIONS (Files & Settings) ---
+
         async function openFile(filePath) {
             try {
                 const response = await fetch('/open_file', {
@@ -744,7 +770,6 @@
             }
         }
 
-        // The function that talks to the backend to open the containing folder
         async function openFolder(filePath) {
             try {
                 const response = await fetch('/open_folder', {
@@ -785,6 +810,86 @@
                 }
             } catch (error) {
                 console.error("Error saving key:", error);
+            }
+        }
+
+        // --- SETTINGS LOGIC ---
+        async function fetchSettings() {
+            try {
+                const res = await fetch('/get_settings');
+                const data = await res.json();
+                renderFolderList(data.watch_paths);
+            } catch (error) { console.error("Failed to load settings"); }
+        }
+
+        function renderFolderList(paths) {
+            const list = document.getElementById('folderList');
+            list.innerHTML = '';
+            if (paths.length === 0) {
+                list.innerHTML = '<li style="color: var(--text-muted); padding: 1rem 0;">No folders selected yet.</li>';
+                return;
+            }
+            paths.forEach(path => {
+                const li = document.createElement('li');
+                li.className = 'folder-item';
+                // Escape backslashes for Windows paths in JS
+                const safePath = path.replace(/\\/g, '\\\\');
+                li.innerHTML = `
+                    <span class="folder-path">${path}</span>
+                    <button class="remove-btn" title="Stop watching this folder" onclick="removeFolder('${safePath}')">✕</button>
+                `;
+                list.appendChild(li);
+            });
+            // Show the "Continue" button if they are in setup mode and have added at least 1 folder
+            const continueBtn = document.getElementById('continueSetupBtn');
+            if (isFirstTimeSetup && paths.length > 0) {
+                continueBtn.classList.remove('hidden');
+            } else {
+                continueBtn.classList.add('hidden');
+            }
+        }
+
+        async function triggerAddFolder() {
+            try {
+                const res = await fetch('/add_folder', { method: 'POST' });
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    renderFolderList(data.watch_paths);
+                }
+            } catch (error) { 
+                console.error("Failed to add folder"); 
+            }
+        }
+
+        async function removeFolder(path) {
+            try {
+                const res = await fetch('/remove_folder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: path })
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    renderFolderList(data.watch_paths);
+                }
+            } catch (error) { console.error("Failed to remove folder"); }
+        }
+
+        async function continueSetup() {
+            try {
+                const keyRes = await fetch('/check_setup');
+                const keyData = await keyRes.json();
+                
+                if (keyData.status === 'needs_key') {
+                    showState('setup');
+                    document.getElementById('apiKeyInput').focus();
+                } else {
+                    isFirstTimeSetup = false; // Setup complete!
+                    showState('welcome');
+                }
+            } catch (e) {
+                showState('welcome');
             }
         }
     </script>

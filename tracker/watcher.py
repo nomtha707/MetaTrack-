@@ -8,6 +8,8 @@ import time
 import json
 import re
 import threading
+import tkinter as tk
+from tkinter import filedialog
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from datetime import datetime
@@ -124,6 +126,20 @@ def _generate_snippet(full_text: str, query: str, snippet_length=250):
     end = min(len(full_text), best_match_index + snippet_length - 75) 
     return full_text[start:end].strip().replace("\n", " ")
 
+def chunk_text(text, chunk_size=150, overlap=30):
+    """Slices long text into small overlapping chunks for the AI to read."""
+    if not text: return []
+    words = text.split()
+    chunks = []
+    
+    for i in range(0, len(words), chunk_size - overlap):
+        chunk = " ".join(words[i:i + chunk_size])
+        chunks.append(chunk)
+        if i + chunk_size >= len(words):
+            break
+            
+    return chunks
+
 # --- FLASK SERVER APP ---
 app = Flask(__name__)
 
@@ -173,13 +189,25 @@ def search_endpoint():
             # 3. Combine them
             vector_results = text_results + image_results
             
-            search_paths = [res['path'] for res in vector_results]
+            # 4. Clean the chunk tags and find the highest score for each file
+            best_scores = {}
+            for res in vector_results:
+                # This strips the "::chunk_1" tag right off the path!
+                clean_path = res['path'].split('::chunk_')[0] 
+                score = res['score']
+                
+                # Keep the highest score if multiple chunks from the same file match
+                if clean_path not in best_scores or score > best_scores[clean_path]:
+                    best_scores[clean_path] = score
+
+            search_paths = list(best_scores.keys())
+            
             if search_paths:
                 filtered_semantic_results = db.get_files_by_path_and_filter(search_paths, sql_filter)
                 for res in filtered_semantic_results:
                     res_dict = dict(res)
-                    # Find highest score from the combined list
-                    res_dict['score'] = next((v['score'] for v in vector_results if v['path'] == res['path']), 0)
+                    # Assign the highest chunk score back to the file
+                    res_dict['score'] = best_scores.get(res['path'], 0)
                     final_results_map[res['path']] = res_dict
         else:
             metadata_results = db.get_files_by_filter_only(sql_filter)
@@ -230,7 +258,7 @@ def search_endpoint():
     except Exception as e:
         logging.error(f"Error during search: {e}\n{traceback.format_exc()}")
         return jsonify({"error": "Internal server error"}), 500
-
+    
 @app.route('/open_file', methods=['POST'])
 def open_file_endpoint():
     global db
@@ -297,6 +325,53 @@ def save_key():
         
     return jsonify({"error": "Invalid key"}), 400
 
+@app.route('/get_settings', methods=['GET'])
+def get_settings():
+    paths = []
+    if os.path.exists(config.SETTINGS_PATH):
+        with open(config.SETTINGS_PATH, 'r') as f:
+            paths = json.load(f).get('watch_paths', [])
+    return jsonify({"watch_paths": paths})
+
+@app.route('/add_folder', methods=['POST'])
+def add_folder():
+    # Open native Windows folder picker safely
+    root = tk.Tk()
+    root.attributes("-topmost", True) # Force it to appear on top!
+    root.withdraw()
+    folder_path = filedialog.askdirectory(parent=root, title="Select a folder for MetaTrack to watch")
+    root.destroy()
+    
+    if folder_path:
+        paths = []
+        if os.path.exists(config.SETTINGS_PATH):
+            with open(config.SETTINGS_PATH, 'r') as f:
+                paths = json.load(f).get('watch_paths', [])
+        
+        # Don't add duplicates
+        if folder_path not in paths:
+            paths.append(folder_path)
+            with open(config.SETTINGS_PATH, 'w') as f:
+                json.dump({"watch_paths": paths}, f)
+                
+        return jsonify({"status": "success", "watch_paths": paths})
+    return jsonify({"status": "cancelled"})
+
+@app.route('/remove_folder', methods=['POST'])
+def remove_folder():
+    path_to_remove = request.json.get('path')
+    paths = []
+    if os.path.exists(config.SETTINGS_PATH):
+        with open(config.SETTINGS_PATH, 'r') as f:
+            paths = json.load(f).get('watch_paths', [])
+            
+    if path_to_remove in paths:
+        paths.remove(path_to_remove)
+        with open(config.SETTINGS_PATH, 'w') as f:
+            json.dump({"watch_paths": paths}, f)
+            
+    return jsonify({"status": "success", "watch_paths": paths})
+
 @app.route('/get_recent_files', methods=['GET'])
 def get_recent_files():
     return jsonify(db.get_recent_files(limit=5))
@@ -355,8 +430,14 @@ class Handler(FileSystemEventHandler):
             else:
                 logging.info(f"Processing (text): {path}")
                 text = extract_text(path)
-                emb = embedder.embed_text(text)
-                vstore_text.upsert(path, emb)
+                if text:
+                    # Slice the document into 150-word chunks
+                    chunks = chunk_text(text)
+                    for i, chunk in enumerate(chunks):
+                        emb = embedder.embed_text(chunk)
+                        # Save each chunk with a unique ID tag! (e.g., file.pdf::chunk_0)
+                        chunk_path = f"{path}::chunk_{i}"
+                        vstore_text.upsert(chunk_path, emb)
             
             db.upsert(current_meta)
         except Exception as e:
