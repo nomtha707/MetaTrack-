@@ -33,6 +33,17 @@ embedder = None
 vstore_text = None   # Text database
 vstore_image = None  # Image database
 agent_model = None
+# NEW: Dynamic File Watcher Globals
+observer = None
+event_handler = None
+active_watches = {}
+# NEW: The Live Sync Tracker
+sync_status = {
+    "total": 0,
+    "scanned": 0,
+    "is_syncing": False,
+    "current_file": "Standing by..."
+}
 # ------------------------
 
 # --- LOGGING SETUP ---
@@ -139,6 +150,62 @@ def chunk_text(text, chunk_size=150, overlap=30):
             break
             
     return chunks
+
+def _scan_directory_task(path):
+    """The background worker that safely counts and processes files."""
+    global sync_status, event_handler
+    sync_status["is_syncing"] = True
+    
+    excluded_dirs_lower = [d.lower() for d in config.EXCLUDED_DIRS]
+    
+    # 1. Fast Pre-count (to get the denominator for the progress bar)
+    files_to_process = []
+    for root, dirs, files in os.walk(path, topdown=True, onerror=walk_error_handler):
+        dirs[:] = [d for d in dirs if d.lower() not in excluded_dirs_lower and not d.startswith('.')]
+        for filename in files:
+            file_path = os.path.join(root, filename)
+            if not event_handler._is_path_excluded(file_path):
+                files_to_process.append(file_path)
+    
+    # Add to the running total (in case they add multiple folders at once)
+    sync_status["total"] += len(files_to_process)
+    
+    # 2. Process the files
+    for file_path in files_to_process:
+        sync_status["current_file"] = os.path.basename(file_path)
+        event_handler.process_file(file_path, True)
+        sync_status["scanned"] += 1
+        
+    # 3. Check if all tasks are complete
+    if sync_status["scanned"] >= sync_status["total"]:
+        sync_status["is_syncing"] = False
+        sync_status["current_file"] = "All systems up to date."
+
+def start_watching_folder(path):
+    global observer, event_handler, active_watches
+    if path in active_watches or not os.path.exists(path): return
+    
+    logging.info(f"Performing initial scan for new folder: {path}")
+    
+    # Spawn the heavy lifting into a background thread
+    threading.Thread(target=_scan_directory_task, args=(path,), daemon=True).start()
+    
+    # Attach the live Watchdog listener so it catches future changes
+    try:
+        watch = observer.schedule(event_handler, path, recursive=True)
+        active_watches[path] = watch
+    except Exception as e:
+        logging.error(f"Failed to watch {path}: {e}")
+
+def stop_watching_folder(path):
+    global observer, active_watches
+    if path in active_watches:
+        try:
+            observer.unschedule(active_watches[path])
+            del active_watches[path]
+            logging.info(f"Live tracking stopped for: {path}")
+        except Exception as e:
+            logging.error(f"Error stopping watch for {path}: {e}")
 
 # --- FLASK SERVER APP ---
 app = Flask(__name__)
@@ -327,17 +394,34 @@ def save_key():
 
 @app.route('/get_settings', methods=['GET'])
 def get_settings():
+    # 1. Get the folders
     paths = []
     if os.path.exists(config.SETTINGS_PATH):
         with open(config.SETTINGS_PATH, 'r') as f:
             paths = json.load(f).get('watch_paths', [])
-    return jsonify({"watch_paths": paths})
+
+    # 2. Get the masked API Key securely
+    masked_key = "Not Set"
+    key_path = 'api_key.txt'
+    if os.path.exists(key_path):
+        with open(key_path, 'r') as f:
+            key = f.read().strip()
+            if len(key) > 15:
+                # Show first 10 and last 4 characters, hide the rest
+                masked_key = f"{key[:10]}...{key[-4:]}"
+                
+    return jsonify({"watch_paths": paths, "masked_key": masked_key})
+
+@app.route('/sync_status', methods=['GET'])
+def get_sync_status():
+    global sync_status
+    return jsonify(sync_status)
 
 @app.route('/add_folder', methods=['POST'])
 def add_folder():
     # Open native Windows folder picker safely
     root = tk.Tk()
-    root.attributes("-topmost", True) # Force it to appear on top!
+    root.attributes("-topmost", True)
     root.withdraw()
     folder_path = filedialog.askdirectory(parent=root, title="Select a folder for MetaTrack to watch")
     root.destroy()
@@ -348,11 +432,12 @@ def add_folder():
             with open(config.SETTINGS_PATH, 'r') as f:
                 paths = json.load(f).get('watch_paths', [])
         
-        # Don't add duplicates
         if folder_path not in paths:
             paths.append(folder_path)
             with open(config.SETTINGS_PATH, 'w') as f:
                 json.dump({"watch_paths": paths}, f)
+                
+            threading.Thread(target=start_watching_folder, args=(folder_path,), daemon=True).start()
                 
         return jsonify({"status": "success", "watch_paths": paths})
     return jsonify({"status": "cancelled"})
@@ -369,6 +454,8 @@ def remove_folder():
         paths.remove(path_to_remove)
         with open(config.SETTINGS_PATH, 'w') as f:
             json.dump({"watch_paths": paths}, f)
+            
+        stop_watching_folder(path_to_remove)
             
     return jsonify({"status": "success", "watch_paths": paths})
 
@@ -477,29 +564,19 @@ if __name__ == '__main__':
 
         # --- 1. RUN TRACKER IN BACKGROUND ---
         def run_tracker():
+            global observer, event_handler
+            event_handler = Handler()
+            observer = Observer()
+            observer.start() # Start the engine empty
+
             watch_paths = []
             if os.path.exists(config.SETTINGS_PATH):
                 with open(config.SETTINGS_PATH, 'r') as f:
                     watch_paths = json.load(f).get('watch_paths', [])
 
-            event_handler = Handler()
-            excluded_dirs_lower = [d.lower() for d in config.EXCLUDED_DIRS]
-
+            # Feed it the saved folders one by one
             for path in watch_paths:
-                if os.path.exists(path):
-                    for root, dirs, files in os.walk(path, topdown=True, onerror=walk_error_handler):
-                        dirs[:] = [d for d in dirs if d.lower() not in excluded_dirs_lower and not d.startswith('.')]
-                        for filename in files:
-                            file_path = os.path.join(root, filename)
-                            if not event_handler._is_path_excluded(file_path):
-                                event_handler.process_file(file_path, True)
-
-            observer = Observer()
-            for path in watch_paths:
-                if os.path.exists(path):
-                    observer.schedule(event_handler, path, recursive=True)
-
-            if watch_paths: observer.start()
+                start_watching_folder(path)
 
             try:
                 while True: time.sleep(1)

@@ -397,6 +397,31 @@
             cursor: pointer; transition: 0.2s; font-family: var(--font-main);
         }
         .add-folder-btn:hover { background: var(--accent-purple); color: #211E3A; }
+
+        /* --- Live Sync Indicator UI --- */
+        .sync-indicator {
+            padding: 1.5rem 2rem;
+            border-top: 1px solid #1E1C3A;
+            background: var(--bg-sidebar);
+            display: flex; flex-direction: column; gap: 0.6rem;
+            transition: opacity 0.3s ease;
+        }
+        .sync-header {
+            display: flex; justify-content: space-between; font-size: 0.8rem;
+            color: #C1BFCF; font-weight: bold; text-transform: uppercase; letter-spacing: 1px;
+        }
+        .progress-bar-bg {
+            width: 100%; height: 6px; background: #1E1C3A;
+            border-radius: 3px; overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%; background: var(--accent-active);
+            width: 0%; transition: width 0.3s ease;
+        }
+        .sync-file-name {
+            font-size: 0.75rem; color: var(--text-muted);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -415,6 +440,17 @@
                 </a>
             </nav>
             
+            <div id="syncIndicator" class="sync-indicator hidden">
+                <div class="sync-header">
+                    <span class="sync-title">🔄 Indexing...</span>
+                    <span id="syncProgressText" class="sync-progress">0%</span>
+                </div>
+                <div class="progress-bar-bg">
+                    <div id="syncProgressBar" class="progress-bar-fill"></div>
+                </div>
+                <div id="syncCurrentFile" class="sync-file-name">Standing by...</div>
+            </div>
+
             <div class="settings-container">
                 <a href="#" class="nav-item" onclick="navTo('settings')" style="margin:0; padding: 0.8rem; display: flex; align-items: center; gap: 0.8rem; text-decoration: none; color: var(--text-muted); font-weight: bold; transition: 0.2s;">
                     <span class="icon">⚙</span> Settings
@@ -471,9 +507,10 @@
                     <h2>Settings</h2>
                 </div>
                 <div class="settings-content" style="max-width: 800px; width: 100%;">
+                    
                     <div class="settings-card">
                         <h3 style="margin-top: 0; font-size: 1.5rem;">Watched Folders</h3>
-                        <p style="color: var(--text-muted); margin-bottom: 2rem; line-height: 1.5;">Select the directories MetaTrack should index and search. <br><strong style="color: var(--accent-purple);">Note:</strong> You must restart the application for new folders to be scanned.</p>
+                        <p style="color: var(--text-muted); margin-bottom: 2rem; line-height: 1.5;">Select the directories MetaTrack should index and search. <br><strong style="color: var(--accent-purple);">Note:</strong> Folders are synced live in the background.</p>
                         
                         <ul id="folderList" class="folder-list">
                             </ul>
@@ -483,6 +520,27 @@
                             <button id="continueSetupBtn" class="add-folder-btn hidden" style="background: var(--accent-purple); color: #211E3A;" onclick="continueSetup()">Continue ➔</button>
                         </div>
                     </div>
+
+                    <div class="settings-card" style="margin-top: 2rem;">
+                        <h3 style="margin-top: 0; font-size: 1.5rem;">Agent Core (API Key)</h3>
+                        <p style="color: var(--text-muted); margin-bottom: 2rem; line-height: 1.5;">Update your Gemini API key if you have run out of quota or wish to change Google accounts.</p>
+                        
+                        <div style="display: flex; gap: 1rem; align-items: center; margin-bottom: 1.5rem;">
+                            <span style="color: #C1BFCF; font-weight: bold;">Current Key:</span>
+                            <code id="currentApiKeyDisplay" style="background: #121025; padding: 0.5rem 1rem; border-radius: 6px; color: var(--accent-purple); font-size: 1rem; border: 1px solid #1E1C3A;">Loading...</code>
+                        </div>
+                        
+                        <div class="search-bar-container large" style="width: 100%; display: flex; gap: 1rem;">
+                            <span class="search-icon" style="left: 1rem; font-size: 1.3rem;">🔑</span>
+                            <input type="password" id="newApiKeyInput" class="main-search-input" placeholder="Paste new AIzaSy... key here" style="height: 50px; font-size: 1rem; padding-left: 3rem; flex: 1;">
+                            <button class="add-folder-btn" onclick="updateSettingsApiKey()" style="padding: 0 1.5rem;">Update Engine</button>
+                        </div>
+                        
+                        <div id="keyUpdateSuccess" style="color: #55AFFF; margin-top: 1rem; display: none; font-weight: bold; align-items: center; gap: 0.5rem;">
+                            <span>✓</span> Key successfully updated and engine re-wired!
+                        </div>
+                    </div>
+
                 </div>
             </div>
 
@@ -819,7 +877,42 @@
                 const res = await fetch('/get_settings');
                 const data = await res.json();
                 renderFolderList(data.watch_paths);
+
+                document.getElementById('currentApiKeyDisplay').innerText = data.masked_key || "Not Set";
             } catch (error) { console.error("Failed to load settings"); }
+        }
+
+        async function updateSettingsApiKey() {
+            const newKey = document.getElementById('newApiKeyInput').value;
+            if (!newKey.trim()) return;
+
+            try {
+                const res = await fetch('/save_key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: newKey })
+                });
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    // Clear the input box
+                    document.getElementById('newApiKeyInput').value = '';
+                    
+                    // Show success message
+                    const successMsg = document.getElementById('keyUpdateSuccess');
+                    successMsg.style.display = 'flex';
+                    
+                    // Refresh the settings to show the newly masked key
+                    fetchSettings(); 
+                    
+                    // Hide the success message after 3 seconds
+                    setTimeout(() => { successMsg.style.display = 'none'; }, 3000);
+                } else {
+                    alert("Failed to update API Key.");
+                }
+            } catch (error) {
+                console.error("Error updating key:", error);
+            }
         }
 
         function renderFolderList(paths) {
@@ -892,6 +985,41 @@
                 showState('welcome');
             }
         }
+
+        // --- LIVE SYNC RADAR ---
+        setInterval(async () => {
+            try {
+                const res = await fetch('/sync_status');
+                const data = await res.json();
+                const indicator = document.getElementById('syncIndicator');
+                
+                // If it is actively scanning files...
+                if (data.is_syncing && data.total > 0) {
+                    indicator.classList.remove('hidden');
+                    
+                    // Calculate the math safely
+                    let percent = Math.floor((data.scanned / data.total) * 100);
+                    if (percent > 100) percent = 100;
+
+                    // Update the UI
+                    document.getElementById('syncProgressText').innerText = `${percent}%`;
+                    document.getElementById('syncProgressBar').style.width = `${percent}%`;
+                    document.getElementById('syncCurrentFile').innerText = data.current_file;
+                    
+                } else if (data.total > 0 && data.scanned >= data.total) {
+                    // It just finished! Show 100% for a second, then hide it gracefully.
+                    document.getElementById('syncProgressText').innerText = `100%`;
+                    document.getElementById('syncProgressBar').style.width = `100%`;
+                    document.getElementById('syncCurrentFile').innerText = "All systems up to date.";
+                    
+                    setTimeout(() => {
+                        indicator.classList.add('hidden');
+                    }, 3000); 
+                }
+            } catch(e) {
+                // Ignore silent radar failures if server is restarting
+            }
+        }, 1500);
     </script>
 </body>
 </html>
