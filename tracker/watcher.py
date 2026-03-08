@@ -510,21 +510,25 @@ class Handler(FileSystemEventHandler):
 
             # --- ROUTING LOGIC: Text vs Image ---
             ext = os.path.splitext(path)[1].lower()
+            
+            # 1. ALWAYS try to extract text first (Extractor will use OCR for images!)
+            text = extract_text(path)
+            if text:
+                # If it found text (even inside an image), chop it and save it to the Text Brain
+                chunks = chunk_text(text)
+                for i, chunk in enumerate(chunks):
+                    emb = embedder.embed_text(chunk)
+                    chunk_path = f"{path}::chunk_{i}"
+                    vstore_text.upsert(chunk_path, emb)
+
+            # 2. If it's an image, ALSO send it to the Image Brain
             if ext in ['.jpg', '.jpeg', '.png']:
-                logging.info(f"Processing (image): {path}")
+                logging.info(f"Processing visual data for (image): {path}")
                 emb = embedder.embed_image(path)
                 vstore_image.upsert(path, emb)
-            else:
-                logging.info(f"Processing (text): {path}")
-                text = extract_text(path)
-                if text:
-                    # Slice the document into 150-word chunks
-                    chunks = chunk_text(text)
-                    for i, chunk in enumerate(chunks):
-                        emb = embedder.embed_text(chunk)
-                        # Save each chunk with a unique ID tag! (e.g., file.pdf::chunk_0)
-                        chunk_path = f"{path}::chunk_{i}"
-                        vstore_text.upsert(chunk_path, emb)
+                
+            elif not text:
+                logging.info(f"Processed file with no readable text: {path}")
             
             db.upsert(current_meta)
         except Exception as e:
