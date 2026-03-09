@@ -553,6 +553,7 @@ def walk_error_handler(exception):
 
 if __name__ == '__main__':
     try:
+        # --- 0. INITIALIZE CORE COMPONENTS ---
         key_path = 'api_key.txt'
         if os.path.exists(key_path):
             with open(key_path, 'r') as f:
@@ -566,7 +567,15 @@ if __name__ == '__main__':
 
         agent_model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=AGENT_SYSTEM_PROMPT)
 
-        # --- 1. RUN TRACKER IN BACKGROUND ---
+        # --- 1. START FLASK SERVER IN BACKGROUND ---
+        def start_server():
+            # Run Flask silently so the Desktop Window can connect to it
+            app.run(port=5000, debug=False, use_reloader=False)
+
+        server_thread = threading.Thread(target=start_server, daemon=True)
+        server_thread.start()
+
+        # --- 2. RUN TRACKER IN BACKGROUND ---
         def run_tracker():
             global observer, event_handler
             event_handler = Handler()
@@ -591,8 +600,9 @@ if __name__ == '__main__':
         tracker_thread = threading.Thread(target=run_tracker, daemon=True)
         tracker_thread.start()
 
-        # --- 2. SETUP THE NATIVE WINDOW ---
-        window = webview.create_window('MetaTrack Search Agent', app, width=1000, height=700)
+        # --- 3. SETUP THE NATIVE DESKTOP WINDOW ---
+        # Notice we point it to the localhost URL where Flask is running
+        window = webview.create_window('MetaTrack Search Agent', 'http://127.0.0.1:5000', width=1200, height=800)
 
         # Intercept the 'X' button! Hide the window instead of killing the app.
         def on_closing():
@@ -601,7 +611,7 @@ if __name__ == '__main__':
             
         window.events.closing += on_closing
 
-        # --- 3. SYSTEM TRAY (THE MASTER CONTROLLER) ---
+        # --- 4. SYSTEM TRAY (THE MASTER CONTROLLER) ---
         def setup_tray():
             # Draw a temporary Dark Academia / Purple icon for the taskbar
             image = Image.new('RGB', (64, 64), color='#0A091A')
@@ -631,7 +641,7 @@ if __name__ == '__main__':
         tray_thread = threading.Thread(target=setup_tray, daemon=True)
         tray_thread.start()
 
-        # --- 4. START THE APP (Must be on main thread) ---
+        # --- 5. START THE UI ENGINE (Must be on main thread) ---
         webview.start()
 
     except Exception as e:
