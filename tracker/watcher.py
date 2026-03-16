@@ -577,16 +577,6 @@ if __name__ == '__main__':
 
         agent_model = genai.GenerativeModel('gemini-2.5-flash', system_instruction=AGENT_SYSTEM_PROMPT)
 
-        # --- 1. START FLASK SERVER IN BACKGROUND ---
-        def start_server():
-            # Run Flask silently so the Desktop Window can connect to it
-            app.run(port=5000, debug=False, use_reloader=False)
-
-        server_thread = threading.Thread(target=start_server, daemon=True)
-        server_thread.start()
-
-        # ---> THE FIX: Give Flask 1.5 seconds to fully wake up! <---
-        time.sleep(1.5)
 
         # --- 2. RUN TRACKER IN BACKGROUND ---
         def run_tracker():
@@ -614,9 +604,9 @@ if __name__ == '__main__':
         tracker_thread.start()
 
         # --- 3. SETUP THE NATIVE DESKTOP WINDOW ---
-        # Notice we point it to the localhost URL where Flask is running
-        window = webview.create_window('MetaTrack Search Agent', 'http://127.0.0.1:5000', width=1200, height=800)
-
+        # Notice we pass 'app' directly! PyWebView handles the server for us now.
+        window = webview.create_window('MetaTrack Search Agent', app, width=1200, height=800)
+        
         # Intercept the 'X' button! Hide the window instead of killing the app.
         def on_closing():
             window.hide()
