@@ -4,6 +4,7 @@ from PIL import Image, ImageDraw
 import webview
 from flask import render_template
 import os
+import sys
 import time
 import json
 import re
@@ -18,6 +19,8 @@ from tracker.metadata_db import MetadataDB
 from tracker.extractor import extract_text
 from tracker.embedder import Embedder
 from tracker.vectorstore import SimpleVectorStore
+# -------------------------------------
+
 from flask import Flask, request, jsonify
 import logging
 import traceback
@@ -78,12 +81,12 @@ The 'files' table has columns: path, name, modified_at, access_count.
 2.  The JSON plan MUST have two keys: "semantic_query" and "sql_filter".
 3.  **"semantic_query": This is for the *core topic* of the search ONLY.**
     - You MUST extract the main subject (e.g., "prolog", "dog in a park", "sharp objects").
-    - CRITICAL: DO NOT include words like "file", "image", "picture", "photo", "document", or "scan". 
-    - Example: If the user asks "give me images of a volkswagen", the semantic_query MUST be exactly "volkswagen".
+    - CRITICAL: DO NOT include words like "file", "image", "picture", "photo", "document", "scan", or "screenshot". 
+    - Example: If the user asks "give me screenshots of code", the semantic_query MUST be exactly "code".
 4.  **"sql_filter": This is for *all* metadata and file type filters.**
     - Use `path LIKE '%.docx'` for "word document".
     - Use `path LIKE '%.py'` for "python script".
-    - Use `(path LIKE '%.jpg' OR path LIKE '%.png' OR path LIKE '%.jpeg')` for "images" or "pictures".
+    - Use `(path LIKE '%.jpg' OR path LIKE '%.png' OR path LIKE '%.jpeg')` for "images", "pictures", or "screenshots".
     - Use `modified_at LIKE 'YYYY-MM-DD%'` for dates.
     - If no filter is needed, use "1=1".
 5.  If the query is *only* metadata (e.g., "newest files"), set "semantic_query" to null.
@@ -207,8 +210,15 @@ def stop_watching_folder(path):
         except Exception as e:
             logging.error(f"Error stopping watch for {path}: {e}")
 
-# --- FLASK SERVER APP ---
-app = Flask(__name__)
+# --- PYINSTALLER TEMPLATE FIX ---
+if getattr(sys, 'frozen', False):
+    # If running as a compiled .exe, look inside the PyInstaller folder
+    template_dir = os.path.join(sys._MEIPASS, 'tracker', 'templates')
+else:
+    # If running as a normal python script, look in the normal folder
+    template_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
+
+app = Flask(__name__, template_folder=template_dir)
 
 # --- THE FRONTEND UI ---
 @app.route('/')
@@ -574,6 +584,9 @@ if __name__ == '__main__':
 
         server_thread = threading.Thread(target=start_server, daemon=True)
         server_thread.start()
+
+        # ---> THE FIX: Give Flask 1.5 seconds to fully wake up! <---
+        time.sleep(1.5)
 
         # --- 2. RUN TRACKER IN BACKGROUND ---
         def run_tracker():
